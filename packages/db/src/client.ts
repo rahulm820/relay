@@ -41,8 +41,11 @@ export async function resolveBotTenant(pool: Pool, botId: string): Promise<strin
   return rows[0]?.tenant_id ?? null;
 }
 
-/** Due outbox rows across all tenants (worker entry point). Load each row with withTenant afterwards. */
-export async function listDueOutbox(pool: Pool, limit: number): Promise<{ id: string; tenantId: string }[]> {
-  const { rows } = await pool.query<{ id: string; tenant_id: string }>("SELECT * FROM relay_due_outbox($1)", [limit]);
+/**
+ * Due outbox rows across all tenants (worker entry point): pending rows whose time has come, plus rows
+ * stuck in 'processing' for longer than `leaseSeconds`. Claim each with withTenant afterwards.
+ */
+export async function listDueOutbox(pool: Pool, limit: number, leaseSeconds = 60): Promise<{ id: string; tenantId: string }[]> {
+  const { rows } = await pool.query<{ id: string; tenant_id: string }>("SELECT * FROM relay_due_outbox($1, $2)", [limit, leaseSeconds]);
   return rows.map((r) => ({ id: r.id, tenantId: r.tenant_id }));
 }
