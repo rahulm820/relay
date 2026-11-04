@@ -1,0 +1,78 @@
+# Hackathon topology (architecture §14). Switch core is wired in Issue #25; placeholder below.
+name: relay
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-relay}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+      POSTGRES_DB: ${POSTGRES_DB:-relay}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-relay} -d ${POSTGRES_DB:-relay}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        APP: api
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-relay}:${POSTGRES_PASSWORD:-change-me}@postgres:5432/${POSTGRES_DB:-relay}
+      REDIS_URL: redis://redis:6379
+      API_PORT: 8080
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        APP: worker
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-relay}:${POSTGRES_PASSWORD:-change-me}@postgres:5432/${POSTGRES_DB:-relay}
+      REDIS_URL: redis://redis:6379
+      WORKER_PORT: 8081
+    ports:
+      - "8081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # switch-core: placeholder. Wire to the local Switch checkout (/home/rahul/switch)
+  # per its quickstart in Issue #15 / #25. Not started by default.
+  # switch-core:
+  #   build: /home/rahul/switch
+  #   ports:
+  #     - "3000:3000"   # Gateway UI
+  #     - "8000:8000"   # Agent API
+
+volumes:
+  pgdata:
