@@ -36,7 +36,8 @@ services:
         APP: api
     env_file: .env
     environment:
-      DATABASE_URL: postgres://${POSTGRES_USER:-relay}:${POSTGRES_PASSWORD:-change-me}@postgres:5432/${POSTGRES_DB:-relay}
+      # relay_api is a non-owner login, so row-level security applies to the API.
+      DATABASE_URL: postgres://relay_api:${RELAY_API_DB_PASSWORD:-change-me-api}@postgres:5432/${POSTGRES_DB:-relay}
       REDIS_URL: redis://redis:6379
       API_PORT: 8080
     ports:

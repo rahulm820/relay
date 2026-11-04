@@ -25,6 +25,12 @@ const EnvSchema = z.object({
 
   TELEGRAM_WEBHOOK_PUBLIC_URL: optionalUrl,
 
+  /** Base64 of 32 random bytes (`openssl rand -base64 32`). Encrypts raw message text at rest. */
+  MESSAGE_ENCRYPTION_KEY: z.preprocess(
+    empty,
+    z.string().refine((v) => Buffer.from(v, "base64").length === 32, { message: "must be 32 bytes, base64" }).optional(),
+  ).transform((v) => (v === undefined ? undefined : new Secret(v))),
+
   GITHUB_TOKEN: secret,
 
   SWITCH_GATEWAY_URL: z.preprocess(empty, z.url().default("http://localhost:8000/gateway")),
@@ -48,6 +54,7 @@ export interface Config {
   api: { host: string; port: number };
   worker: { port: number };
   telegram: { webhookPublicUrl?: string };
+  security: { messageEncryptionKey?: Secret };
   github: { token?: Secret };
   switch: {
     gatewayUrl: string;
@@ -93,6 +100,7 @@ export function loadConfig(env: Readonly<Record<string, string | undefined>> = p
     api: { host: e.API_HOST, port: e.API_PORT },
     worker: { port: e.WORKER_PORT },
     telegram: { webhookPublicUrl: e.TELEGRAM_WEBHOOK_PUBLIC_URL },
+    security: { messageEncryptionKey: e.MESSAGE_ENCRYPTION_KEY },
     github: { token: e.GITHUB_TOKEN },
     switch: {
       gatewayUrl: e.SWITCH_GATEWAY_URL,

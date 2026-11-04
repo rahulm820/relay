@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { inspect } from "node:util";
 import { describe, it } from "node:test";
-import { ConfigError, EnvSecretProvider, Secret, loadConfig, redactForLog } from "./index.js";
+import { ConfigError, EnvSecretProvider, Secret, decryptText, encryptText, loadConfig, parseEncryptionKey, redactForLog } from "./index.js";
 
 const base = { DATABASE_URL: "postgres://u:pw-DO-NOT-LEAK@localhost:5432/db", REDIS_URL: "redis://localhost:6379" };
 
@@ -40,6 +40,15 @@ describe("loadConfig", () => {
   });
 });
 
+describe("MESSAGE_ENCRYPTION_KEY", () => {
+  it("accepts 32 base64 bytes and rejects other lengths by name", () => {
+    const ok = loadConfig({ ...base, MESSAGE_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString("base64") });
+    assert.equal(ok.security.messageEncryptionKey?.reveal(), Buffer.alloc(32, 7).toString("base64"));
+    assert.throws(() => loadConfig({ ...base, MESSAGE_ENCRYPTION_KEY: "c2hvcnQ=" }), /MESSAGE_ENCRYPTION_KEY is invalid/);
+    assert.equal(loadConfig(base).security.messageEncryptionKey, undefined);
+  });
+});
+
 describe("secrets never leak", () => {
   const raw = "tok-abc123-SHOULD-NOT-APPEAR";
   const config = loadConfig({ ...base, GITHUB_TOKEN: raw, LLM_API_KEY: raw, SWITCH_ADMIN_PASSWORD: raw });
@@ -72,5 +81,20 @@ describe("EnvSecretProvider", () => {
     assert.equal((await p.get("env:FOO"))?.reveal(), "bar");
     assert.equal(await p.get("env:MISSING"), undefined);
     await assert.rejects(p.get("vault:x"));
+  });
+});
+
+describe("message encryption", () => {
+  const key = parseEncryptionKey(Buffer.alloc(32, 1).toString("base64"));
+  it("round-trips, uses a fresh IV, and detects tampering and a wrong key", () => {
+    const a = encryptText(key, "héllo 👋");
+    const b = encryptText(key, "héllo 👋");
+    assert.notDeepEqual(a, b);
+    assert.equal(decryptText(key, a), "héllo 👋");
+    assert.ok(!a.toString("utf8").includes("llo"));
+    a[a.length - 1] = a[a.length - 1]! ^ 1;
+    assert.throws(() => decryptText(key, a));
+    assert.throws(() => decryptText(parseEncryptionKey(Buffer.alloc(32, 2).toString("base64")), b));
+    assert.throws(() => parseEncryptionKey("c2hvcnQ="));
   });
 });

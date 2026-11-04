@@ -84,7 +84,8 @@ describe("OutboxDispatcher", () => {
     const t = await createTenant(db.owner);
     const { id } = await addRow(t.tenantId);
     let calls = 0;
-    const d = dispatcher(registryWith(async () => { calls++; throw new Error("boom"); }));
+    // Wide delays (150 ms, then 300 ms) so the comparison below cannot be disturbed by query latency.
+    const d = dispatcher(registryWith(async () => { calls++; throw new Error("boom"); }), { backoffBaseMs: 150, backoffMaxMs: 1000 });
     await d.runOnce();
     const first = await row(id);
     assert.equal(first.status, "pending");
@@ -95,7 +96,7 @@ describe("OutboxDispatcher", () => {
     const second = await row(id);
     assert.equal(second.attempts, 2);
     assert.equal(second.status, "pending");
-    assert.ok(second.delay > first.delay + 0.03, `delay should grow: ${first.delay} -> ${second.delay}`);
+    assert.ok(second.delay > first.delay + 0.08, `delay should grow: ${first.delay} -> ${second.delay}`);
     await waitFor(async () => (await d.runOnce()) === 1);
     const last = await row(id);
     assert.equal(last.status, "failed");
