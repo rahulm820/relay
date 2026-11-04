@@ -13,7 +13,14 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
-    "clean": "rm -rf dist"
+    "typecheck": "tsc -p tsconfig.test.json",
+    "clean": "rm -rf dist",
+    "test": "tsx --test src/*.test.ts"
+  },
+  "dependencies": {
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "tsx": "^4.23.15"
   }
 }
