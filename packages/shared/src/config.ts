@@ -31,6 +31,14 @@ const EnvSchema = z.object({
     z.string().refine((v) => Buffer.from(v, "base64").length === 32, { message: "must be 32 bytes, base64" }).optional(),
   ).transform((v) => (v === undefined ? undefined : new Secret(v))),
 
+  /**
+   * LOCAL DEVELOPMENT ONLY. Lets the API treat every caller as one fixed tenant, because real
+   * authentication (Issue #17) does not exist yet. Off by default, refused in production, and the API
+   * additionally refuses to start with it unless it listens on a loopback address.
+   */
+  DEV_AUTH_ENABLED: z.preprocess(empty, z.enum(["true", "false"]).default("false")).transform((v) => v === "true"),
+  DEV_AUTH_TENANT_ID: z.preprocess(empty, z.uuid().optional()),
+
   GITHUB_TOKEN: secret,
 
   SWITCH_GATEWAY_URL: z.preprocess(empty, z.url().default("http://localhost:8000/gateway")),
@@ -55,6 +63,7 @@ export interface Config {
   worker: { port: number };
   telegram: { webhookPublicUrl?: string };
   security: { messageEncryptionKey?: Secret };
+  devAuth: { enabled: boolean; tenantId?: string };
   github: { token?: Secret };
   switch: {
     gatewayUrl: string;
@@ -92,6 +101,8 @@ export function loadConfig(env: Readonly<Record<string, string | undefined>> = p
     throw new ConfigError([...problems.values()]);
   }
   const e = parsed.data;
+  if (e.DEV_AUTH_ENABLED && !e.DEV_AUTH_TENANT_ID) throw new ConfigError(["DEV_AUTH_TENANT_ID is required when DEV_AUTH_ENABLED=true"]);
+  if (e.DEV_AUTH_ENABLED && e.NODE_ENV === "production") throw new ConfigError(["DEV_AUTH_ENABLED is not allowed when NODE_ENV=production"]);
   return {
     nodeEnv: e.NODE_ENV,
     logLevel: e.LOG_LEVEL,
@@ -101,6 +112,7 @@ export function loadConfig(env: Readonly<Record<string, string | undefined>> = p
     worker: { port: e.WORKER_PORT },
     telegram: { webhookPublicUrl: e.TELEGRAM_WEBHOOK_PUBLIC_URL },
     security: { messageEncryptionKey: e.MESSAGE_ENCRYPTION_KEY },
+    devAuth: { enabled: e.DEV_AUTH_ENABLED, tenantId: e.DEV_AUTH_TENANT_ID },
     github: { token: e.GITHUB_TOKEN },
     switch: {
       gatewayUrl: e.SWITCH_GATEWAY_URL,

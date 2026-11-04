@@ -6,7 +6,9 @@ import { QueueProducer, Redis } from "@relay/core";
 import { createPool, type Pool } from "@relay/db";
 import { ConfigError, PIPELINE_VERSION, loadConfig, parseEncryptionKey } from "@relay/shared";
 import Fastify, { type FastifyError } from "fastify";
+import { denyAll, devAuthenticator, type Authenticator } from "./auth.js";
 import { registerTelegramWebhook } from "./telegram-webhook.js";
+import { registerTicketRoutes } from "./tickets.js";
 
 export interface ServerDeps {
   pool: Pool;
@@ -19,6 +21,8 @@ export interface ServerDeps {
   /** Where log lines go (tests capture them). Defaults to stdout. */
   logStream?: Writable;
   logLevel?: string;
+  /** Resolves the caller of /api routes. Defaults to deny-all (401) until Issue #17 plugs in real auth. */
+  authenticate?: Authenticator;
 }
 
 export function buildServer(deps: ServerDeps) {
@@ -53,6 +57,7 @@ export function buildServer(deps: ServerDeps) {
     redact: deps.redact ?? baselineRedact,
     encryptionKey: deps.encryptionKey,
   });
+  registerTicketRoutes(app, { pool: deps.pool, authenticate: deps.authenticate ?? denyAll });
   return app;
 }
 
@@ -70,12 +75,24 @@ async function main() {
     process.exit(1);
   }
 
+  let authenticate: Authenticator | undefined;
+  if (config.devAuth.enabled) {
+    // Dev auth treats every caller as one tenant, so it must never be reachable from outside this machine.
+    if (!["127.0.0.1", "localhost", "::1"].includes(config.api.host)) {
+      console.error("Invalid configuration: DEV_AUTH_ENABLED requires API_HOST to be a loopback address");
+      process.exit(1);
+    }
+    authenticate = devAuthenticator(config.devAuth.tenantId!);
+    console.warn(JSON.stringify({ msg: "DEV AUTH ENABLED: every request is treated as one fixed tenant. Local development only." }));
+  }
+
   // DATABASE_URL must be the relay_api login (RLS applies); never the schema owner.
   const pool = createPool(config.databaseUrl);
   const redis = new Redis(config.redisUrl);
   redis.on("error", (err) => console.error(JSON.stringify({ msg: "redis error", code: err.name })));
   const app = buildServer({
     pool, producer: new QueueProducer(redis), encryptionKey: parseEncryptionKey(rawKey.reveal()), logLevel: config.logLevel,
+    ...(authenticate && { authenticate }),
   });
 
   let shuttingDown = false;

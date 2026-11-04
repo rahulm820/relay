@@ -40,6 +40,19 @@ describe("loadConfig", () => {
   });
 });
 
+describe("DEV_AUTH", () => {
+  const tenant = "00000000-0000-4000-8000-000000000001";
+  it("is off by default and needs a tenant when on", () => {
+    assert.equal(loadConfig(base).devAuth.enabled, false);
+    assert.deepEqual(loadConfig({ ...base, DEV_AUTH_ENABLED: "true", DEV_AUTH_TENANT_ID: tenant }).devAuth, { enabled: true, tenantId: tenant });
+    assert.throws(() => loadConfig({ ...base, DEV_AUTH_ENABLED: "true" }), /DEV_AUTH_TENANT_ID is required/);
+    assert.throws(() => loadConfig({ ...base, DEV_AUTH_ENABLED: "yes" }), /DEV_AUTH_ENABLED is invalid/);
+  });
+  it("is refused in production", () => {
+    assert.throws(() => loadConfig({ ...base, NODE_ENV: "production", DEV_AUTH_ENABLED: "true", DEV_AUTH_TENANT_ID: tenant }), /not allowed/);
+  });
+});
+
 describe("MESSAGE_ENCRYPTION_KEY", () => {
   it("accepts 32 base64 bytes and rejects other lengths by name", () => {
     const ok = loadConfig({ ...base, MESSAGE_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString("base64") });
