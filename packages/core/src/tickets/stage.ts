@@ -2,7 +2,7 @@ import { ExtractionOutcomeSchema, isFallback, type ExtractedIssue } from "@relay
 import { PermanentFailureError } from "../queue/index.js";
 import type { StageHandler } from "../orchestrator/index.js";
 import { atLeast, PriorityStageResultSchema, provisionalPriority } from "./priority.js";
-import { createTicketsForMessage, type NewTicket } from "./service.js";
+import { attachClientReply, createTicketsForMessage, type NewTicket } from "./service.js";
 
 export interface TicketStageOptions {
   /** Tickets whose extraction confidence is below this are held in quarantine for a human. */
@@ -18,12 +18,17 @@ const ACTOR = { type: "system", ref: "pipeline:ticket" } as const;
  *   low confidence      -> quarantined (priority at least P3), outbox rows written
  *   sensitive data      -> quarantined, NO outbox rows until a human releases it (quarantined -> triaged)
  *   off-topic / not a complaint -> no ticket; the stage result says so and lists no ticket ids
+ *   reply to a pending question (status needs_info) -> attached to that ticket, no new ticket
  * Idempotent: replays find the existing tickets (see createTicketsForMessage).
  */
 export function ticketStage(opts: TicketStageOptions = {}): StageHandler {
   const threshold = opts.lowConfidenceThreshold ?? 0.5;
 
   return async (ctx) => {
+    // An answer to a question we asked belongs to the waiting ticket, whatever the extractor made of it.
+    const repliedTo = await ctx.db((c) => attachClientReply(c, ctx.messageId, ACTOR));
+    if (repliedTo) return { result: { outcome: "reply_appended", ticketIds: [repliedTo] } };
+
     const extraction = ExtractionOutcomeSchema.safeParse(ctx.results["extract"]);
     if (!extraction.success) throw new PermanentFailureError("no valid extraction result for this message", "no_extraction");
     const outcome = extraction.data;

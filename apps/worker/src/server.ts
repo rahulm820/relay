@@ -1,9 +1,12 @@
 // apps/worker: queue consumers (one per stage), the outbox dispatcher and a health endpoint.
-// The ticket stage is real (#8); other stage and outbox handlers are skeletons that later issues replace (see @relay/core).
+// The ticket and notify stages (#8, #16) and the switch.create_room and client.send outbox handlers (#15, #16) are real; the rest are skeletons that
+// later issues replace (see @relay/core).
 import { createServer } from "node:http";
-import { Orchestrator, OutboxDispatcher, Redis, createDefaultOutboxRegistry, createDefaultStageRegistry, githubSyncStage, ticketStage } from "@relay/core";
+import { createClientSendHandler, createPgClientSendStore } from "@relay/channels";
+import { Orchestrator, OutboxDispatcher, Redis, createDefaultOutboxRegistry, createDefaultStageRegistry, githubSyncStage, notifyStage, ticketStage } from "@relay/core";
 import { createPool, withTenant } from "@relay/db";
 import { createExtractor, createLlmProvider } from "@relay/llm";
+import { createSwitchRoomHandler, switchFromConfig } from "@relay/switch";
 import { ConfigError, EnvSecretProvider, PIPELINE_VERSION, PROMPT_VERSION, loadConfig } from "@relay/shared";
 
 let config;
@@ -44,10 +47,28 @@ if (!extract) console.warn(JSON.stringify({ msg: "llm not configured; using plac
 // Stages that are not implemented yet stay no-op skeletons (see createDefaultStageRegistry).
 const stages = createDefaultStageRegistry(extract ? { extract } : {});
 stages.register("ticket", ticketStage());
+stages.register("notify", notifyStage()); // queues the acknowledgement / refusal / clarification (#16)
 // GitHub issue creation (#9). Tokens are read from env:NAME refs stored on the integration.
 stages.register("github-sync", githubSyncStage({ secrets: new EnvSecretProvider(process.env) }));
 const orchestrator = new Orchestrator({ pool, redis, stages });
-const dispatcher = new OutboxDispatcher({ pool, registry: createDefaultOutboxRegistry() });
+// Switch rooms are created by the outbox (switch.create_room), not by the pipeline's `switch` stage, which stays a
+// skeleton: the outbox row is the retry mechanism and is written in the same transaction as the ticket.
+// Without Switch settings the worker still boots; those rows then fail with code switch_not_configured.
+const { client: switchClient, missing: switchMissing } = switchFromConfig(config.switch);
+if (!switchClient) console.warn(JSON.stringify({ msg: "switch integration disabled", missing: switchMissing }));
+const outboxHandlers = createDefaultOutboxRegistry();
+outboxHandlers.register("switch.create_room", createSwitchRoomHandler({
+  pool, client: switchClient, missing: switchMissing,
+  triagerAgent: config.switch.triagerAgent, notifierAgent: config.switch.notifierAgent,
+  ...(config.switch.bridgeId ? { bridgeId: config.switch.bridgeId } : {}),
+}));
+// client.send (#16): bot tokens come from the environment variable each bot's credentials_ref names. A missing token
+// fails that row with code bot_token_missing; the worker itself still boots.
+outboxHandlers.register("client.send", createClientSendHandler({
+  store: createPgClientSendStore(pool), tokens: new EnvSecretProvider(process.env),
+  ...(config.telegram.apiBaseUrl ? { apiBaseUrl: config.telegram.apiBaseUrl } : {}),
+}));
+const dispatcher = new OutboxDispatcher({ pool, registry: outboxHandlers });
 
 const server = createServer((req, res) => {
   if (req.method === "GET" && req.url === "/healthz") {
