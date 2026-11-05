@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { GitHubProvider, TrackerError, parseRepoRef } from "./index.js";
+import { GitHubProvider, TrackerError, parseRepoRef, retryAfterMs } from "./index.js";
 
 interface Call { url: string; method: string; headers: Record<string, string>; body: unknown }
 
@@ -89,4 +89,54 @@ test("getStatus reads the state and label names", async () => {
 test("onWebhook is not implemented before Issue #21", () => {
   const gh = new GitHubProvider({ token: TOKEN, fetchImpl: fakeFetch(() => new Response("{}")).fetchImpl });
   assert.throws(() => gh.onWebhook("issues", {}), (err: unknown) => err instanceof TrackerError && err.code === "not_implemented");
+});
+
+const TICKET = "0a1b2c3d-0000-4000-8000-000000000001";
+const search = (items: unknown[]) => new Response(JSON.stringify({ items }), { status: 200 });
+
+test("findIssueByTicket searches the repo for the ticket id and returns the matching issue", async () => {
+  const { fetchImpl, calls } = fakeFetch(() => search([{ id: 7, number: 12, html_url: "https://github.com/acme/app/issues/12", state: "closed", body: `text\n_Created from Relay ticket \`${TICKET}\`._` }]));
+  const found = await new GitHubProvider({ token: TOKEN, fetchImpl }).findIssueByTicket("acme/app", TICKET);
+  assert.deepEqual(found, { id: "7", number: 12, url: "https://github.com/acme/app/issues/12", state: "closed" });
+  assert.equal(calls[0]!.method, "GET");
+  const q = decodeURIComponent(new URL(calls[0]!.url).searchParams.get("q")!);
+  assert.match(q, /repo:acme\/app/);
+  assert.ok(q.includes(TICKET));
+});
+
+test("findIssueByTicket ignores fuzzy hits, pull requests and returns the oldest real match", async () => {
+  const hit = (number: number, body: string, extra: object = {}) => ({ id: number, number, html_url: `https://github.com/acme/app/issues/${number}`, state: "open", body, ...extra });
+  const { fetchImpl } = fakeFetch(() => search([
+    hit(30, "mentions another ticket 0a1b2c3d-0000-4000-8000-000000000002"),
+    hit(25, `Relay ticket ${TICKET}`, { pull_request: {} }),
+    hit(22, `Relay ticket ${TICKET}`),
+    hit(21, `Relay ticket ${TICKET}`),
+  ]));
+  assert.equal((await new GitHubProvider({ token: TOKEN, fetchImpl }).findIssueByTicket("acme/app", TICKET))?.number, 21);
+});
+
+test("findIssueByTicket returns null when nothing matches, and rejects a non-UUID before any request", async () => {
+  const { fetchImpl, calls } = fakeFetch(() => search([]));
+  const gh = new GitHubProvider({ token: TOKEN, fetchImpl });
+  assert.equal(await gh.findIssueByTicket("acme/app", TICKET), null);
+  await assert.rejects(gh.findIssueByTicket("acme/app", 'x" OR repo:other/secret'), (e: TrackerError) => e.code === "validation");
+  assert.equal(calls.length, 1, "the bad id never reached the network");
+});
+
+test("a rate limit carries the wait GitHub asked for", async () => {
+  const limited = (headers: Record<string, string>) => fakeFetch(() => new Response("{}", { status: 403, headers })).fetchImpl;
+  const a = await new GitHubProvider({ token: TOKEN, fetchImpl: limited({ "retry-after": "30" }) }).getStatus("acme/app", 1).catch((e: TrackerError) => e);
+  assert.equal((a as TrackerError).code, "rate_limited");
+  assert.equal((a as TrackerError).retryAfterMs, 30_000);
+  const b = await new GitHubProvider({ token: TOKEN, fetchImpl: fakeFetch(() => new Response("{}", { status: 429 })).fetchImpl }).getStatus("acme/app", 1).catch((e: TrackerError) => e);
+  assert.equal((b as TrackerError).retryAfterMs, undefined);
+});
+
+test("retryAfterMs prefers Retry-After and falls back to the reset epoch", () => {
+  const res = (h: Record<string, string>) => new Response("", { headers: h });
+  assert.equal(retryAfterMs(res({ "retry-after": "5" })), 5000);
+  assert.equal(retryAfterMs(res({ "x-ratelimit-reset": "1000" }), 990_000), 10_000);
+  assert.equal(retryAfterMs(res({ "x-ratelimit-reset": "1000" }), 2_000_000), 0);
+  assert.equal(retryAfterMs(res({})), undefined);
+  assert.equal(retryAfterMs(res({ "retry-after": "soon" })), undefined);
 });

@@ -28,6 +28,11 @@ export interface ExternalIssue {
   url: string;
 }
 
+/** An issue found by `findIssueByTicket`: the reference plus whether it is still open. */
+export interface FoundIssue extends ExternalIssue {
+  state: "open" | "closed";
+}
+
 export interface IssueStatus {
   state: "open" | "closed";
   labels: string[];
@@ -42,6 +47,12 @@ export interface TrackerProvider {
   /** Cross-references two issues by commenting on both. */
   linkIssues(repo: string, from: number, to: number): Promise<void>;
   getStatus(repo: string, number: number): Promise<IssueStatus>;
+  /**
+   * Finds the issue created for a Relay ticket (matched on the ticket id that issue bodies carry), or null.
+   * Used by the reconcile job to repair a row whose creation call timed out or crashed after GitHub accepted it.
+   * Search is eventually consistent, so callers must not treat null as proof for a very recent attempt.
+   */
+  findIssueByTicket(repo: string, ticketId: string): Promise<FoundIssue | null>;
   /** Parses a verified inbound webhook into a status event. Implemented in Issue #21. */
   onWebhook(event: string, payload: unknown): WebhookEvent | null;
 }
@@ -72,6 +83,8 @@ export class TrackerError extends Error {
       | "network"
       | "not_implemented",
     message: string,
+    /** How long the provider asked us to wait (rate limits). Milliseconds. */
+    readonly retryAfterMs?: number,
   ) {
     super(message);
     this.name = "TrackerError";

@@ -49,3 +49,34 @@ export async function listDueOutbox(pool: Pool, limit: number, leaseSeconds = 60
   const { rows } = await pool.query<{ id: string; tenant_id: string }>("SELECT * FROM relay_due_outbox($1, $2)", [limit, leaseSeconds]);
   return rows.map((r) => ({ id: r.id, tenantId: r.tenant_id }));
 }
+
+/** Tracker rows the reconcile job should examine, across tenants. See migration 0007 for the selection rules. */
+export async function listReconcileCandidates(
+  pool: Pool, opts: { limit: number; graceSeconds: number; staleSeconds: number; retryBudget: number },
+): Promise<{ id: string; tenantId: string }[]> {
+  const { rows } = await pool.query<{ id: string; tenant_id: string }>(
+    "SELECT * FROM relay_reconcile_candidates($1, $2, $3, $4)", [opts.limit, opts.graceSeconds, opts.staleSeconds, opts.retryBudget]);
+  return rows.map((r) => ({ id: r.id, tenantId: r.tenant_id }));
+}
+
+export interface SyncHealthCounts {
+  outboxBacklog: number;
+  outboxOldestSeconds: number;
+  outboxFailed: number;
+  syncPending: number;
+  syncFailed: number;
+  syncCreated: number;
+  syncClosed: number;
+  syncFailedBeyondBudget: number;
+}
+
+/** GitHub sync backlog and failure counts across all tenants (worker only). Counts, never row contents. */
+export async function getSyncHealthCounts(pool: Pool, retryBudget: number): Promise<SyncHealthCounts> {
+  const { rows } = await pool.query("SELECT * FROM relay_sync_health_all($1)", [retryBudget]);
+  const r = rows[0];
+  return {
+    outboxBacklog: r.outbox_backlog, outboxOldestSeconds: r.outbox_oldest_seconds, outboxFailed: r.outbox_failed,
+    syncPending: r.sync_pending, syncFailed: r.sync_failed, syncCreated: r.sync_created, syncClosed: r.sync_closed,
+    syncFailedBeyondBudget: r.sync_failed_beyond_budget,
+  };
+}
