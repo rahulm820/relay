@@ -55,7 +55,8 @@ services:
         APP: worker
     env_file: .env
     environment:
-      DATABASE_URL: postgres://${POSTGRES_USER:-relay}:${POSTGRES_PASSWORD:-change-me}@postgres:5432/${POSTGRES_DB:-relay}
+      # relay_worker is a non-owner login, so row-level security applies to the worker.
+      DATABASE_URL: postgres://relay_worker:${RELAY_WORKER_DB_PASSWORD:-change-me-worker}@postgres:5432/${POSTGRES_DB:-relay}
       REDIS_URL: redis://redis:6379
       WORKER_PORT: 8081
     ports:
