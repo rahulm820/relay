@@ -205,6 +205,31 @@ describe("changing tickets", () => {
   });
 });
 
+describe("status changes through the API queue a client update", () => {
+  const clientRows = async (id: string) => (await db.owner.query("SELECT payload FROM outbox WHERE kind = 'client.send' AND payload->>'ticketId' = $1", [id])).rows;
+
+  it("the transition and PATCH routes queue exactly one update for a notifying status and none for a silent one", async () => {
+    const app = server();
+    const t = await createTenant(db.owner);
+    const [viaTransition, viaPatch] = (await makeTickets(t, [{}, {}])) as [string, string];
+    await db.owner.query("UPDATE tickets SET status = 'assigned' WHERE id = ANY($1)", [[viaTransition, viaPatch]]);
+    assert.equal((await call(app, "POST", `/api/tickets/${viaTransition}/transition`, t, { to: "in_progress" })).statusCode, 200);
+    assert.equal((await call(app, "PATCH", `/api/tickets/${viaPatch}`, t, { status: "in_progress" })).statusCode, 200);
+    assert.deepEqual((await clientRows(viaTransition)).map((r) => r.payload.status), ["in_progress"]);
+    assert.deepEqual((await clientRows(viaPatch)).map((r) => r.payload.status), ["in_progress"]);
+    assert.equal((await call(app, "POST", `/api/tickets/${viaTransition}/transition`, t, { to: "in_review" })).statusCode, 200);
+    assert.equal((await clientRows(viaTransition)).length, 1, "in_review is silent");
+  });
+
+  it("a rejected transition queues nothing", async () => {
+    const app = server();
+    const t = await createTenant(db.owner);
+    const id = (await makeTickets(t, [{}]))[0]!;
+    assert.equal((await call(app, "POST", `/api/tickets/${id}/transition`, t, { to: "resolved" })).statusCode, 409);
+    assert.equal((await clientRows(id)).length, 0);
+  });
+});
+
 describe("tenant isolation through the API", () => {
   it("another tenant gets 404 for read, patch and transition, and nothing changes", async () => {
     const app = server();
