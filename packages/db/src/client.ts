@@ -80,3 +80,23 @@ export async function getSyncHealthCounts(pool: Pool, retryBudget: number): Prom
     syncFailedBeyondBudget: r.sync_failed_beyond_budget,
   };
 }
+
+export interface LoginCandidate { id: string; tenantId: string; passwordHash: string; role: string; active: boolean; name: string }
+
+/** Pre-tenant lookup for login: the user with this email (case-insensitive), or null. Returns the password hash. */
+export async function findAdminForLogin(pool: Pool, email: string): Promise<LoginCandidate | null> {
+  const { rows } = await pool.query<{ id: string; tenant_id: string; password_hash: string; role: string; active: boolean; name: string }>(
+    "SELECT * FROM relay_find_admin_for_login($1)", [email]);
+  const r = rows[0];
+  return r ? { id: r.id, tenantId: r.tenant_id, passwordHash: r.password_hash, role: r.role, active: r.active, name: r.name } : null;
+}
+
+export interface ResolvedSession { sessionId: string; tenantId: string; userId: string; email: string; name: string; role: string }
+
+/** Pre-tenant lookup for every authenticated request: the live session for this token hash, or null. */
+export async function resolveSession(pool: Pool, tokenHash: string, idleSeconds: number): Promise<ResolvedSession | null> {
+  const { rows } = await pool.query<{ session_id: string; tenant_id: string; user_id: string; email: string; name: string; role: string }>(
+    "SELECT * FROM relay_resolve_session($1, $2)", [tokenHash, idleSeconds]);
+  const r = rows[0];
+  return r ? { sessionId: r.session_id, tenantId: r.tenant_id, userId: r.user_id, email: r.email, name: r.name, role: r.role } : null;
+}
