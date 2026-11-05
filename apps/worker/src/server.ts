@@ -1,11 +1,12 @@
 // apps/worker: queue consumers (one per stage), the outbox dispatcher and a health endpoint.
-// The ticket stage (#8) and the switch.create_room outbox handler (#15) are real; the rest are skeletons that
+// The ticket and notify stages (#8, #16) and the switch.create_room and client.send outbox handlers (#15, #16) are real; the rest are skeletons that
 // later issues replace (see @relay/core).
 import { createServer } from "node:http";
-import { Orchestrator, OutboxDispatcher, Redis, createDefaultOutboxRegistry, createDefaultStageRegistry, ticketStage } from "@relay/core";
+import { createClientSendHandler, createPgClientSendStore } from "@relay/channels";
+import { Orchestrator, OutboxDispatcher, Redis, createDefaultOutboxRegistry, createDefaultStageRegistry, notifyStage, ticketStage } from "@relay/core";
 import { createPool } from "@relay/db";
 import { createSwitchRoomHandler, switchFromConfig } from "@relay/switch";
-import { ConfigError, PIPELINE_VERSION, loadConfig } from "@relay/shared";
+import { ConfigError, EnvSecretProvider, PIPELINE_VERSION, loadConfig } from "@relay/shared";
 
 let config;
 try {
@@ -24,6 +25,7 @@ redis.on("error", (err) => console.error(JSON.stringify({ msg: "redis error", co
 // Stages that are not implemented yet stay no-op skeletons (see createDefaultStageRegistry).
 const stages = createDefaultStageRegistry();
 stages.register("ticket", ticketStage());
+stages.register("notify", notifyStage()); // queues the acknowledgement / refusal / clarification (#16)
 const orchestrator = new Orchestrator({ pool, redis, stages });
 // Switch rooms are created by the outbox (switch.create_room), not by the pipeline's `switch` stage, which stays a
 // skeleton: the outbox row is the retry mechanism and is written in the same transaction as the ticket.
@@ -35,6 +37,12 @@ outboxHandlers.register("switch.create_room", createSwitchRoomHandler({
   pool, client: switchClient, missing: switchMissing,
   triagerAgent: config.switch.triagerAgent, notifierAgent: config.switch.notifierAgent,
   ...(config.switch.bridgeId ? { bridgeId: config.switch.bridgeId } : {}),
+}));
+// client.send (#16): bot tokens come from the environment variable each bot's credentials_ref names. A missing token
+// fails that row with code bot_token_missing; the worker itself still boots.
+outboxHandlers.register("client.send", createClientSendHandler({
+  store: createPgClientSendStore(pool), tokens: new EnvSecretProvider(process.env),
+  ...(config.telegram.apiBaseUrl ? { apiBaseUrl: config.telegram.apiBaseUrl } : {}),
 }));
 const dispatcher = new OutboxDispatcher({ pool, registry: outboxHandlers });
 

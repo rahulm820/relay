@@ -4,6 +4,7 @@ import {
   type ActorType, type Category, type Priority, type PrioritySource, type Role, type TicketStatus,
 } from "@relay/shared";
 import { enqueueOutbox } from "../outbox/index.js";
+import { notifyClientStatusChange } from "./client-notify.js";
 import { StatusConflictError, TicketNotFoundError, TicketValidationError } from "./errors.js";
 
 export interface Actor {
@@ -64,14 +65,15 @@ const toView = (r: TicketRow): TicketView => ({
   sourceMessageId: r.source_message_id, createdAt: r.created_at.toISOString(), resolvedAt: iso(r.resolved_at),
 });
 
-async function addEvent(c: Client, ticketId: string, type: string, actor: Actor, payload: Record<string, unknown>): Promise<void> {
+async function addEvent(c: Client, ticketId: string, type: string, actor: Actor, payload: Record<string, unknown>): Promise<string> {
   // ticket_events is append-only for the app role: this INSERT is the only way history is written.
-  await c.query(
+  const { rows } = await c.query<{ id: string }>(
     // clock_timestamp(), not the default now(): now() is frozen at transaction start, which would give every
     // event of one transaction the same time and leave their order to chance.
-    "INSERT INTO ticket_events (tenant_id, ticket_id, type, actor_type, actor_ref, payload, created_at) VALUES (relay_current_tenant(), $1, $2, $3, $4, $5, clock_timestamp())",
+    "INSERT INTO ticket_events (tenant_id, ticket_id, type, actor_type, actor_ref, payload, created_at) VALUES (relay_current_tenant(), $1, $2, $3, $4, $5, clock_timestamp()) RETURNING id",
     [ticketId, type, actor.type, actor.ref, JSON.stringify(payload)],
   );
+  return rows[0]!.id;
 }
 
 async function currentTenant(c: Client): Promise<string> {
@@ -118,11 +120,15 @@ export async function transitionTicket(
      WHERE id = $1`,
     [input.ticketId, input.to],
   );
-  await addEvent(c, input.ticketId, "status_changed", input.actor, { from, to: input.to, ...(input.reason ? { reason: input.reason } : {}) });
+  const eventId = await addEvent(c, input.ticketId, "status_changed", input.actor, { from, to: input.to, ...(input.reason ? { reason: input.reason } : {}) });
+  const tenantId = await currentTenant(c);
   if (from === "quarantined" && input.to === "triaged") {
     // Released by a human: now the ticket may leave the platform.
-    await enqueueTicketOutbox(c, await currentTenant(c), input.ticketId, `release-${input.ticketId}`);
+    await enqueueTicketOutbox(c, tenantId, input.ticketId, `release-${input.ticketId}`);
   }
+  // The single place every status change passes through, so the client hears about each notifying change exactly
+  // once, in this same transaction (queued if and only if the change commits).
+  await notifyClientStatusChange(c, { tenantId, ticketId: input.ticketId, to: input.to, eventId, traceId: `ticket-${input.ticketId}` });
   return (await getTicket(c, input.ticketId))!;
 }
 
@@ -206,6 +212,25 @@ export async function createTicketsForMessage(
     out.push({ ticketId, created: true });
   }
   return out;
+}
+
+/**
+ * A client message in a conversation that has a ticket waiting for their answer (status needs_info) is that
+ * answer: it is recorded on the ticket (`client_replied`) and the ticket moves on to `triaged`, instead of
+ * opening a new ticket. Returns the ticket id, or null when nothing was waiting. Safe to repeat for the same
+ * message: the first run's event is found and the same ticket id is returned.
+ */
+export async function attachClientReply(c: Client, messageId: string, actor: Actor): Promise<string | null> {
+  const prior = await c.query<{ ticket_id: string }>("SELECT ticket_id FROM ticket_events WHERE type = 'client_replied' AND payload->>'messageId' = $1 LIMIT 1", [messageId]);
+  if (prior.rows[0]) return prior.rows[0].ticket_id;
+  const waiting = await c.query<{ id: string }>(
+    `SELECT id FROM tickets WHERE status = 'needs_info' AND conversation_id = (SELECT conversation_id FROM messages WHERE id = $1)
+     ORDER BY created_at DESC, id DESC LIMIT 1 FOR UPDATE`, [messageId]);
+  const ticketId = waiting.rows[0]?.id;
+  if (!ticketId) return null;
+  await addEvent(c, ticketId, "client_replied", actor, { messageId });
+  await transitionTicket(c, { ticketId, to: "triaged", actor, reason: "client replied" });
+  return ticketId;
 }
 
 // ---------------------------------------------------------------------------------------------------

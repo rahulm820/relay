@@ -24,6 +24,8 @@ const EnvSchema = z.object({
   WORKER_PORT: port.default(8081),
 
   TELEGRAM_WEBHOOK_PUBLIC_URL: optionalUrl,
+  /** Bot API base URL. Only change it to point at a local mock; the default is the real Telegram. */
+  TELEGRAM_API_BASE_URL: optionalUrl,
 
   /** Base64 of 32 random bytes (`openssl rand -base64 32`). Encrypts raw message text at rest. */
   MESSAGE_ENCRYPTION_KEY: z.preprocess(
@@ -68,7 +70,7 @@ export interface Config {
   redisUrl: string;
   api: { host: string; port: number };
   worker: { port: number };
-  telegram: { webhookPublicUrl?: string };
+  telegram: { webhookPublicUrl?: string; apiBaseUrl?: string };
   security: { messageEncryptionKey?: Secret };
   devAuth: { enabled: boolean; tenantId?: string };
   github: { token?: Secret };
@@ -121,7 +123,7 @@ export function loadConfig(env: Readonly<Record<string, string | undefined>> = p
     redisUrl: e.REDIS_URL,
     api: { host: e.API_HOST, port: e.API_PORT },
     worker: { port: e.WORKER_PORT },
-    telegram: { webhookPublicUrl: e.TELEGRAM_WEBHOOK_PUBLIC_URL },
+    telegram: { webhookPublicUrl: e.TELEGRAM_WEBHOOK_PUBLIC_URL, apiBaseUrl: e.TELEGRAM_API_BASE_URL },
     security: { messageEncryptionKey: e.MESSAGE_ENCRYPTION_KEY },
     devAuth: { enabled: e.DEV_AUTH_ENABLED, tenantId: e.DEV_AUTH_TENANT_ID },
     github: { token: e.GITHUB_TOKEN },
