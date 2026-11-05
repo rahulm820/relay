@@ -66,11 +66,11 @@ describe("migrations", () => {
     const p = createPool(withDb(ADMIN, throwaway));
     try {
       await migrateUp(p);
-      assert.equal((await migrateDown(p, 99)).length, 3);
+      assert.equal((await migrateDown(p, 99)).length, 4);
       const { rows } = await p.query("SELECT count(*)::int AS n FROM pg_tables WHERE schemaname = 'public' AND tablename <> 'schema_migrations'");
       assert.equal(rows[0].n, 0);
       assert.equal((await p.query("SELECT count(*)::int AS n FROM pg_extension WHERE extname = 'vector'")).rows[0].n, 0);
-      assert.equal((await migrateUp(p)).length, 3);
+      assert.equal((await migrateUp(p)).length, 4);
     } finally {
       await p.end();
       await maint.query(`DROP DATABASE ${throwaway} WITH (FORCE)`);

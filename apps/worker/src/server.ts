@@ -1,7 +1,7 @@
 // apps/worker: queue consumers (one per stage), the outbox dispatcher and a health endpoint.
-// Stage and outbox handlers are skeletons here; later issues register real ones (see @relay/core).
+// The ticket stage is real (#8); other stage and outbox handlers are skeletons that later issues replace (see @relay/core).
 import { createServer } from "node:http";
-import { Orchestrator, OutboxDispatcher, Redis, createDefaultOutboxRegistry, createDefaultStageRegistry } from "@relay/core";
+import { Orchestrator, OutboxDispatcher, Redis, createDefaultOutboxRegistry, createDefaultStageRegistry, ticketStage } from "@relay/core";
 import { createPool } from "@relay/db";
 import { ConfigError, PIPELINE_VERSION, loadConfig } from "@relay/shared";
 
@@ -19,7 +19,10 @@ const pool = createPool(config.databaseUrl);
 const redis = new Redis(config.redisUrl);
 redis.on("error", (err) => console.error(JSON.stringify({ msg: "redis error", code: err.name })));
 
-const orchestrator = new Orchestrator({ pool, redis, stages: createDefaultStageRegistry() });
+// Stages that are not implemented yet stay no-op skeletons (see createDefaultStageRegistry).
+const stages = createDefaultStageRegistry();
+stages.register("ticket", ticketStage());
+const orchestrator = new Orchestrator({ pool, redis, stages });
 const dispatcher = new OutboxDispatcher({ pool, registry: createDefaultOutboxRegistry() });
 
 const server = createServer((req, res) => {

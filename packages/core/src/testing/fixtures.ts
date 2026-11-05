@@ -61,7 +61,17 @@ export async function createTenant(owner: Pool): Promise<TestTenant> {
   await owner.query("INSERT INTO bots (id, tenant_id, channel, display_name) VALUES ($1,$2,'telegram','b')", [botId, tenantId]);
   await owner.query("INSERT INTO clients (id, tenant_id, display_name, channel, channel_user_ref) VALUES ($1,$2,'c','telegram',$3)", [clientId, tenantId, randomUUID()]);
   await owner.query("INSERT INTO conversations (id, tenant_id, client_id, bot_id) VALUES ($1,$2,$3,$4)", [conversationId, tenantId, clientId, botId]);
+  // Default SLA targets in minutes (architecture §8.1), so tickets get due dates.
+  for (const [p, ack, resolve] of [["P1", 15, 240], ["P2", 60, 1440], ["P3", 1440, 10080], ["P4", 2880, 43200]] as const) {
+    await owner.query("INSERT INTO sla_policies (tenant_id, priority, ack_minutes, resolve_minutes) VALUES ($1,$2,$3,$4)", [tenantId, p, ack, resolve]);
+  }
   return { tenantId, conversationId };
+}
+
+export async function createMember(owner: Pool, tenantId: string, role = "developer"): Promise<string> {
+  const id = randomUUID();
+  await owner.query("INSERT INTO members (id, tenant_id, name, role) VALUES ($1,$2,'m',$3)", [id, tenantId, role]);
+  return id;
 }
 
 export async function createMessage(owner: Pool, t: TestTenant, textRedacted: string | null = "checkout is broken"): Promise<string> {
