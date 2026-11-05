@@ -34,6 +34,10 @@ export const PriorityDecisionSchema = z.object({
   source: z.enum(PRIORITY_SOURCES),
   roleNeeded: z.enum(ROLES).nullable().optional(),
   assigneeId: z.uuid().nullable().optional(),
+  /** Tracker labels from the matching routing rule (used by GitHub sync). */
+  labels: z.array(z.string()).optional(),
+  /** Roles to notify besides the owner (§8.2 also_notify). */
+  alsoNotify: z.array(z.enum(ROLES)).optional(),
 });
 export type PriorityDecision = z.infer<typeof PriorityDecisionSchema>;
 export const PriorityStageResultSchema = z.object({ decisions: z.array(PriorityDecisionSchema) });
