@@ -24,6 +24,8 @@ const EnvSchema = z.object({
   WORKER_PORT: port.default(8081),
 
   TELEGRAM_WEBHOOK_PUBLIC_URL: optionalUrl,
+  /** Bot API base URL. Only change it to point at a local mock; the default is the real Telegram. */
+  TELEGRAM_API_BASE_URL: optionalUrl,
 
   /** Base64 of 32 random bytes (`openssl rand -base64 32`). Encrypts raw message text at rest. */
   MESSAGE_ENCRYPTION_KEY: z.preprocess(
@@ -47,6 +49,13 @@ const EnvSchema = z.object({
   SWITCH_ADMIN_PASSWORD: secret,
   AGENT_REGISTRATION_TOKEN: secret,
   SWITCH_BRIDGE_ID: optionalString,
+  /** Switch's agent API (where agents post). Defaults to SWITCH_GATEWAY_URL without its trailing /gateway. */
+  SWITCH_API_URL: optionalUrl,
+  /** Names of the two agents every ticket room contains. Created by `npm run switch:bootstrap`. */
+  SWITCH_TRIAGER_AGENT: z.preprocess(empty, z.string().regex(/^[a-z0-9][a-z0-9._-]*$/).default("relay-triager")),
+  SWITCH_NOTIFIER_AGENT: z.preprocess(empty, z.string().regex(/^[a-z0-9][a-z0-9._-]*$/).default("relay-notifier")),
+  /** API key of the notifier agent (printed to .env.switch by the bootstrap, never shown). Posts room messages. */
+  SWITCH_NOTIFIER_API_KEY: secret,
 
   LLM_PROVIDER: z.enum(LLM_PROVIDERS).default("gemini"),
   LLM_API_KEY: secret,
@@ -62,7 +71,7 @@ export interface Config {
   redisUrl: string;
   api: { host: string; port: number };
   worker: { port: number };
-  telegram: { webhookPublicUrl?: string };
+  telegram: { webhookPublicUrl?: string; apiBaseUrl?: string };
   security: { messageEncryptionKey?: Secret };
   admin: { allowedOrigins: string[]; sessionTtlHours: number; sessionIdleMinutes: number; cookieSecure: boolean };
   github: { token?: Secret };
@@ -72,6 +81,10 @@ export interface Config {
     adminPassword?: Secret;
     agentRegistrationToken?: Secret;
     bridgeId?: string;
+    apiUrl?: string;
+    triagerAgent: string;
+    notifierAgent: string;
+    notifierApiKey?: Secret;
   };
   llm: {
     provider: (typeof LLM_PROVIDERS)[number];
@@ -112,7 +125,7 @@ export function loadConfig(env: Readonly<Record<string, string | undefined>> = p
     redisUrl: e.REDIS_URL,
     api: { host: e.API_HOST, port: e.API_PORT },
     worker: { port: e.WORKER_PORT },
-    telegram: { webhookPublicUrl: e.TELEGRAM_WEBHOOK_PUBLIC_URL },
+    telegram: { webhookPublicUrl: e.TELEGRAM_WEBHOOK_PUBLIC_URL, apiBaseUrl: e.TELEGRAM_API_BASE_URL },
     security: { messageEncryptionKey: e.MESSAGE_ENCRYPTION_KEY },
     admin: {
       allowedOrigins: e.ADMIN_ALLOWED_ORIGINS.map((o) => new URL(o).origin),
@@ -127,6 +140,10 @@ export function loadConfig(env: Readonly<Record<string, string | undefined>> = p
       adminPassword: e.SWITCH_ADMIN_PASSWORD,
       agentRegistrationToken: e.AGENT_REGISTRATION_TOKEN,
       bridgeId: e.SWITCH_BRIDGE_ID,
+      apiUrl: e.SWITCH_API_URL,
+      triagerAgent: e.SWITCH_TRIAGER_AGENT,
+      notifierAgent: e.SWITCH_NOTIFIER_AGENT,
+      notifierApiKey: e.SWITCH_NOTIFIER_API_KEY,
     },
     llm: {
       provider: e.LLM_PROVIDER,

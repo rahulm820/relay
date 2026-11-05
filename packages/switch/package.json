@@ -7,10 +7,19 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
-    "clean": "rm -rf dist"
+    "typecheck": "tsc -p tsconfig.test.json",
+    "clean": "rm -rf dist",
+    "test": "tsx --test --test-concurrency=1 src/*.test.ts",
+    "switch:bootstrap": "tsx src/bootstrap-cli.ts",
+    "switch:smoke": "tsx src/smoke-cli.ts"
   },
   "dependencies": {
-    "@relay/shared": "0.1.0"
+    "@relay/shared": "0.1.0",
+    "@relay/core": "0.1.0",
+    "@relay/db": "0.1.0",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "tsx": "^4.23.15"
   }
 }
