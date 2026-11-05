@@ -1,8 +1,10 @@
 // apps/worker: queue consumers (one per stage), the outbox dispatcher and a health endpoint.
-// The ticket stage is real (#8); other stage and outbox handlers are skeletons that later issues replace (see @relay/core).
+// The ticket stage (#8) and the switch.create_room outbox handler (#15) are real; the rest are skeletons that
+// later issues replace (see @relay/core).
 import { createServer } from "node:http";
 import { Orchestrator, OutboxDispatcher, Redis, createDefaultOutboxRegistry, createDefaultStageRegistry, ticketStage } from "@relay/core";
 import { createPool } from "@relay/db";
+import { createSwitchRoomHandler, switchFromConfig } from "@relay/switch";
 import { ConfigError, PIPELINE_VERSION, loadConfig } from "@relay/shared";
 
 let config;
@@ -23,7 +25,18 @@ redis.on("error", (err) => console.error(JSON.stringify({ msg: "redis error", co
 const stages = createDefaultStageRegistry();
 stages.register("ticket", ticketStage());
 const orchestrator = new Orchestrator({ pool, redis, stages });
-const dispatcher = new OutboxDispatcher({ pool, registry: createDefaultOutboxRegistry() });
+// Switch rooms are created by the outbox (switch.create_room), not by the pipeline's `switch` stage, which stays a
+// skeleton: the outbox row is the retry mechanism and is written in the same transaction as the ticket.
+// Without Switch settings the worker still boots; those rows then fail with code switch_not_configured.
+const { client: switchClient, missing: switchMissing } = switchFromConfig(config.switch);
+if (!switchClient) console.warn(JSON.stringify({ msg: "switch integration disabled", missing: switchMissing }));
+const outboxHandlers = createDefaultOutboxRegistry();
+outboxHandlers.register("switch.create_room", createSwitchRoomHandler({
+  pool, client: switchClient, missing: switchMissing,
+  triagerAgent: config.switch.triagerAgent, notifierAgent: config.switch.notifierAgent,
+  ...(config.switch.bridgeId ? { bridgeId: config.switch.bridgeId } : {}),
+}));
+const dispatcher = new OutboxDispatcher({ pool, registry: outboxHandlers });
 
 const server = createServer((req, res) => {
   if (req.method === "GET" && req.url === "/healthz") {

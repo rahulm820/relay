@@ -40,6 +40,15 @@ describe("loadConfig", () => {
   });
 });
 
+describe("switch settings", () => {
+  it("has agent name defaults and an optional notifier key", () => {
+    const c = loadConfig(base);
+    assert.deepEqual([c.switch.triagerAgent, c.switch.notifierAgent, c.switch.notifierApiKey, c.switch.apiUrl], ["relay-triager", "relay-notifier", undefined, undefined]);
+    assert.throws(() => loadConfig({ ...base, SWITCH_NOTIFIER_AGENT: "Bad Name" }), /SWITCH_NOTIFIER_AGENT is invalid/);
+    assert.equal(loadConfig({ ...base, SWITCH_NOTIFIER_API_KEY: "k" }).switch.notifierApiKey?.reveal(), "k");
+  });
+});
+
 describe("DEV_AUTH", () => {
   const tenant = "00000000-0000-4000-8000-000000000001";
   it("is off by default and needs a tenant when on", () => {

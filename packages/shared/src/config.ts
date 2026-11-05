@@ -46,6 +46,13 @@ const EnvSchema = z.object({
   SWITCH_ADMIN_PASSWORD: secret,
   AGENT_REGISTRATION_TOKEN: secret,
   SWITCH_BRIDGE_ID: optionalString,
+  /** Switch's agent API (where agents post). Defaults to SWITCH_GATEWAY_URL without its trailing /gateway. */
+  SWITCH_API_URL: optionalUrl,
+  /** Names of the two agents every ticket room contains. Created by `npm run switch:bootstrap`. */
+  SWITCH_TRIAGER_AGENT: z.preprocess(empty, z.string().regex(/^[a-z0-9][a-z0-9._-]*$/).default("relay-triager")),
+  SWITCH_NOTIFIER_AGENT: z.preprocess(empty, z.string().regex(/^[a-z0-9][a-z0-9._-]*$/).default("relay-notifier")),
+  /** API key of the notifier agent (printed to .env.switch by the bootstrap, never shown). Posts room messages. */
+  SWITCH_NOTIFIER_API_KEY: secret,
 
   LLM_PROVIDER: z.enum(LLM_PROVIDERS).default("gemini"),
   LLM_API_KEY: secret,
@@ -71,6 +78,10 @@ export interface Config {
     adminPassword?: Secret;
     agentRegistrationToken?: Secret;
     bridgeId?: string;
+    apiUrl?: string;
+    triagerAgent: string;
+    notifierAgent: string;
+    notifierApiKey?: Secret;
   };
   llm: {
     provider: (typeof LLM_PROVIDERS)[number];
@@ -120,6 +131,10 @@ export function loadConfig(env: Readonly<Record<string, string | undefined>> = p
       adminPassword: e.SWITCH_ADMIN_PASSWORD,
       agentRegistrationToken: e.AGENT_REGISTRATION_TOKEN,
       bridgeId: e.SWITCH_BRIDGE_ID,
+      apiUrl: e.SWITCH_API_URL,
+      triagerAgent: e.SWITCH_TRIAGER_AGENT,
+      notifierAgent: e.SWITCH_NOTIFIER_AGENT,
+      notifierApiKey: e.SWITCH_NOTIFIER_API_KEY,
     },
     llm: {
       provider: e.LLM_PROVIDER,
