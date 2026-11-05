@@ -7,11 +7,16 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
-    "clean": "rm -rf dist"
+    "typecheck": "tsc -p tsconfig.test.json",
+    "clean": "rm -rf dist",
+    "test": "tsx --test src/queue/*.test.ts"
   },
   "dependencies": {
     "@relay/db": "0.1.0",
-    "@relay/shared": "0.1.0"
+    "@relay/shared": "0.1.0",
+    "ioredis": "^6.0.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.23.15"
   }
 }
