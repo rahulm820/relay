@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { inspect } from "node:util";
 import { describe, it } from "node:test";
-import { ConfigError, EnvSecretProvider, Secret, decryptText, encryptText, loadConfig, parseEncryptionKey, redactForLog } from "./index.js";
+import { ConfigError, EnvSecretProvider, Secret, decryptText, encryptText, hashPassword, loadConfig, parseEncryptionKey, redactForLog, verifyPassword } from "./index.js";
 
 const base = { DATABASE_URL: "postgres://u:pw-DO-NOT-LEAK@localhost:5432/db", REDIS_URL: "redis://localhost:6379" };
 
@@ -49,16 +49,21 @@ describe("switch settings", () => {
   });
 });
 
-describe("DEV_AUTH", () => {
-  const tenant = "00000000-0000-4000-8000-000000000001";
-  it("is off by default and needs a tenant when on", () => {
-    assert.equal(loadConfig(base).devAuth.enabled, false);
-    assert.deepEqual(loadConfig({ ...base, DEV_AUTH_ENABLED: "true", DEV_AUTH_TENANT_ID: tenant }).devAuth, { enabled: true, tenantId: tenant });
-    assert.throws(() => loadConfig({ ...base, DEV_AUTH_ENABLED: "true" }), /DEV_AUTH_TENANT_ID is required/);
-    assert.throws(() => loadConfig({ ...base, DEV_AUTH_ENABLED: "yes" }), /DEV_AUTH_ENABLED is invalid/);
+describe("admin settings", () => {
+  it("has safe defaults", () => {
+    const c = loadConfig(base);
+    assert.deepEqual(c.admin, { allowedOrigins: ["http://localhost:3000"], sessionTtlHours: 12, sessionIdleMinutes: 60, cookieSecure: false });
+    assert.equal(loadConfig({ ...base, NODE_ENV: "production" }).admin.cookieSecure, true);
+    assert.equal(loadConfig({ ...base, NODE_ENV: "production", ADMIN_COOKIE_SECURE: "false" }).admin.cookieSecure, false);
   });
-  it("is refused in production", () => {
-    assert.throws(() => loadConfig({ ...base, NODE_ENV: "production", DEV_AUTH_ENABLED: "true", DEV_AUTH_TENANT_ID: tenant }), /not allowed/);
+  it("normalises origins and refuses wildcards and junk, naming only the variable", () => {
+    assert.deepEqual(loadConfig({ ...base, ADMIN_ALLOWED_ORIGINS: "http://localhost:3000/, https://admin.example.com" }).admin.allowedOrigins, ["http://localhost:3000", "https://admin.example.com"]);
+    for (const bad of ["*", "not a url"]) assert.throws(() => loadConfig({ ...base, ADMIN_ALLOWED_ORIGINS: bad }), /ADMIN_ALLOWED_ORIGINS/);
+    assert.throws(() => loadConfig({ ...base, ADMIN_SESSION_TTL_HOURS: "0" }), /ADMIN_SESSION_TTL_HOURS is invalid/);
+  });
+  it("DEV_AUTH is gone: the variables have no effect and are not part of the config", () => {
+    const c = loadConfig({ ...base, DEV_AUTH_ENABLED: "true", DEV_AUTH_TENANT_ID: "00000000-0000-4000-8000-000000000001" }) as unknown as Record<string, unknown>;
+    assert.equal("devAuth" in c, false);
   });
 });
 
@@ -118,5 +123,21 @@ describe("message encryption", () => {
     assert.throws(() => decryptText(key, a));
     assert.throws(() => decryptText(parseEncryptionKey(Buffer.alloc(32, 2).toString("base64")), b));
     assert.throws(() => parseEncryptionKey("c2hvcnQ="));
+  });
+});
+
+describe("passwords", () => {
+  const cheap = { N: 1024, r: 8, p: 1 };
+  it("hash with a random salt, carry their parameters, and verify", async () => {
+    const a = await hashPassword("correct horse", cheap);
+    const b = await hashPassword("correct horse", cheap);
+    assert.notEqual(a, b);
+    assert.match(a, /^scrypt\$N=1024,r=8,p=1\$[A-Za-z0-9_-]+\$[A-Za-z0-9_-]+$/);
+    assert.ok(!a.includes("correct horse"));
+    assert.equal(await verifyPassword("correct horse", a), true);
+    assert.equal(await verifyPassword("wrong", a), false);
+  });
+  it("treat missing, malformed and absurd stored hashes as a failed login without throwing", async () => {
+    for (const bad of [null, undefined, "", "plain", "scrypt$N=3,r=8,p=1$aa$bb", "scrypt$N=1073741824,r=8,p=1$aa$bb"]) assert.equal(await verifyPassword("x", bad), false);
   });
 });

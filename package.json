@@ -11,8 +11,8 @@
     "apps/*"
   ],
   "scripts": {
-    "build": "npm run build -w @relay/shared -w @relay/db && npm run build --workspaces --if-present",
-    "typecheck": "npm run build -w @relay/shared -w @relay/db && npm run typecheck --workspaces --if-present",
+    "build": "npm run build -w @relay/shared -w @relay/db -w @relay/trackers -w @relay/llm -w @relay/core && npm run build --workspaces --if-present",
+    "typecheck": "npm run build -w @relay/shared -w @relay/db -w @relay/trackers -w @relay/llm -w @relay/core && npm run typecheck --workspaces --if-present",
     "dev": "npm run dev --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "clean": "npm run clean --workspaces --if-present"

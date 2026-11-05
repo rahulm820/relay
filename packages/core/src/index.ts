@@ -5,3 +5,4 @@ export * from "./orchestrator/index.js";
 export * from "./outbox/index.js";
 export * from "./tickets/index.js";
 export { Redis } from "ioredis";
+export * from "./github-sync/index.js";

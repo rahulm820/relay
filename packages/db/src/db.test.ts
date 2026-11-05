@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
+import { readdirSync } from "node:fs";
 import pg from "pg";
 import {
   ACTOR_TYPES, APPROVAL_POLICIES, BOT_STATUSES, CATEGORIES, CHANNELS, CHAT_PROVIDERS, CLIENT_TIERS,
@@ -10,6 +11,8 @@ import {
 import { SEED_COUNTS, DEMO_TENANT_ID, createPool, listDueOutbox, migrateDown, migrateUp, resolveBotTenant, seed, setRolePasswords, withTenant, type Pool } from "./index.js";
 
 // Needs Relay's own Postgres: `docker compose up -d postgres` (host port 5433). Throwaway DB, dropped at the end.
+// Counted from disk so a new migration (or a gap in numbering) never needs this test edited.
+const MIGRATION_COUNT = readdirSync(new URL("../migrations/", import.meta.url)).filter((f) => f.endsWith(".up.sql")).length;
 const ADMIN = process.env["TEST_ADMIN_URL"] ?? "postgres://relay:change-me@localhost:5433/postgres";
 const DB = `relay_test_${process.pid}`;
 const withDb = (url: string, db: string) => { const u = new URL(url); u.pathname = `/${db}`; return u.toString(); };
@@ -66,11 +69,11 @@ describe("migrations", () => {
     const p = createPool(withDb(ADMIN, throwaway));
     try {
       await migrateUp(p);
-      assert.equal((await migrateDown(p, 99)).length, 5);
+      assert.equal((await migrateDown(p, 99)).length, MIGRATION_COUNT);
       const { rows } = await p.query("SELECT count(*)::int AS n FROM pg_tables WHERE schemaname = 'public' AND tablename <> 'schema_migrations'");
       assert.equal(rows[0].n, 0);
       assert.equal((await p.query("SELECT count(*)::int AS n FROM pg_extension WHERE extname = 'vector'")).rows[0].n, 0);
-      assert.equal((await migrateUp(p)).length, 5);
+      assert.equal((await migrateUp(p)).length, MIGRATION_COUNT);
     } finally {
       await p.end();
       await maint.query(`DROP DATABASE ${throwaway} WITH (FORCE)`);
