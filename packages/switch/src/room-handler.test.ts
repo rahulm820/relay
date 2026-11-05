@@ -5,7 +5,7 @@ import { PermanentFailureError, createTicketsForMessage, type OutboxHandlerInput
 import { createMember, createMessage, createTenant, createTestDb, type TestDb, type TestTenant } from "@relay/core/testing";
 import { withTenant } from "@relay/db";
 import { Secret } from "@relay/shared";
-import { SwitchClient, createSwitchRoomHandler, roomMarker } from "./index.js";
+import { SwitchClient, createSwitchRoomHandler, roomMarker, roomName } from "./index.js";
 import { MockSwitch } from "./testing/mock-switch.js";
 
 const MARKER = "PERSONAL-DATA-MARKER";
@@ -120,7 +120,7 @@ describe("one room and one kickoff per ticket", () => {
 
   it("recovers a room that was created before a crash (ref never saved) without making another", async () => {
     const { t, ticketId } = await newTicket();
-    mock.rooms.push({ id: randomUUID(), name: "relay-orphan", description: `Relay ticket room. ${roomMarker(ticketId)}`, bridge_id: "bridge-1", external_channel_id: "c", users: [], archived: false, agent_names: [] });
+    mock.rooms.push({ id: randomUUID(), name: roomName(ticketId), description: `Relay ticket room. ${roomMarker(ticketId)}`, bridge_id: "bridge-1", external_channel_id: "c", users: [], archived: false, agent_names: [] });
     await handler()(input(t, ticketId));
     assert.equal(roomsFor(ticketId).length, 1);
     assert.equal((await ticketRow(ticketId)).switch_room_ref, mock.rooms[0]!.id);
