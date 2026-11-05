@@ -65,3 +65,28 @@ export type PipelineStage = (typeof PIPELINE_STAGES)[number];
 /** Queue consumer groups: the pipeline stages plus the raw-event `ingest` step (Issue #4). */
 export const QUEUE_STAGES = ["ingest", ...PIPELINE_STAGES] as const;
 export type QueueStage = (typeof QUEUE_STAGES)[number];
+
+export const OUTBOX_STATUSES = ["pending", "processing", "done", "failed"] as const;
+export type OutboxStatus = (typeof OUTBOX_STATUSES)[number];
+
+export const BOT_STATUSES = ["pending", "active", "error", "revoked"] as const;
+export type BotStatus = (typeof BOT_STATUSES)[number];
+
+/** Status of a chat connection or tracker integration. */
+export const INTEGRATION_STATUSES = ["active", "error", "revoked"] as const;
+export type IntegrationStatus = (typeof INTEGRATION_STATUSES)[number];
+
+export const DRAFT_STATUSES = ["pending", "approved", "rejected", "superseded"] as const;
+export type DraftStatus = (typeof DRAFT_STATUSES)[number];
+
+export const MESSAGE_DIRECTIONS = ["in", "out"] as const;
+export type MessageDirection = (typeof MESSAGE_DIRECTIONS)[number];
+
+export const CHAT_PROVIDERS = ["slack", "teams", "mattermost", "discord"] as const;
+export type ChatProvider = (typeof CHAT_PROVIDERS)[number];
+
+export const TRACKER_PROVIDERS = ["github", "jira", "linear"] as const;
+export type TrackerProviderName = (typeof TRACKER_PROVIDERS)[number];
+
+export const CONVERSATION_STATUSES = ["open", "closed"] as const;
+export type ConversationStatus = (typeof CONVERSATION_STATUSES)[number];

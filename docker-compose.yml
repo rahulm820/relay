@@ -9,7 +9,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
       POSTGRES_DB: ${POSTGRES_DB:-relay}
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -59,7 +59,7 @@ services:
       REDIS_URL: redis://redis:6379
       WORKER_PORT: 8081
     ports:
-      - "8081:8081"
+      - "8091:8081"
     depends_on:
       postgres:
         condition: service_healthy
