@@ -23,7 +23,9 @@ afterEach(async () => { await Promise.all(apps.map((a) => a.close())); apps = []
 /** TEST-ONLY authenticator: the tenant comes from a header. Production never does this. */
 const testAuth: Authenticator = async (req) => {
   const tenantId = req.headers["x-test-tenant"];
-  return typeof tenantId === "string" ? { tenantId, actor: { type: "human", ref: "api-tester" } } : null;
+  return typeof tenantId === "string"
+    ? { tenantId, userId: "00000000-0000-4000-8000-0000000000aa", email: "t@example.test", name: "Tester", role: "pm", actor: { type: "human", ref: "api-tester" } }
+    : null;
 };
 function server(auth: "test" | "default" = "test") {
   lines = [];
@@ -37,7 +39,11 @@ function server(auth: "test" | "default" = "test") {
 const call = (app: ReturnType<typeof buildServer>, method: "GET" | "POST" | "PATCH", url: string, tenant: TestTenant | string | null, body?: unknown) =>
   app.inject({
     method, url,
-    headers: { ...(tenant ? { "x-test-tenant": typeof tenant === "string" ? tenant : tenant.tenantId } : {}), ...(body !== undefined ? { "content-type": "application/json" } : {}) },
+    headers: {
+      ...(tenant ? { "x-test-tenant": typeof tenant === "string" ? tenant : tenant.tenantId } : {}),
+      ...(body !== undefined ? { "content-type": "application/json" } : {}),
+      ...(method !== "GET" ? { "x-requested-with": "relay-admin" } : {}), // the CSRF header every browser call must send
+    },
     ...(body !== undefined ? { payload: JSON.stringify(body) } : {}),
   });
 
@@ -199,7 +205,7 @@ describe("changing tickets", () => {
     const app = server();
     const t = await createTenant(db.owner);
     const [id] = await makeTickets(t, [{}]);
-    const res = await app.inject({ method: "PATCH", url: `/api/tickets/${id}`, headers: { "x-test-tenant": t.tenantId, "content-type": "application/json" }, payload: "{nope" });
+    const res = await app.inject({ method: "PATCH", url: `/api/tickets/${id}`, headers: { "x-test-tenant": t.tenantId, "content-type": "application/json", "x-requested-with": "relay-admin" }, payload: "{nope" });
     assert.equal(res.statusCode, 400);
     noTrace(res.body);
   });

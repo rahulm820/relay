@@ -1,3 +1,4 @@
+import { hashPassword } from "@relay/shared";
 import type { Pool } from "./client.js";
 
 // Fake demo data only. Fixed UUIDs + ON CONFLICT DO NOTHING make the seed safe to re-run.
@@ -50,4 +51,17 @@ export async function seed(pool: Pool): Promise<void> {
       [id(30 + i), t, p, ack, resolve],
     );
   }
+}
+
+/**
+ * Ensures the demo admin exists with the given password (role pm = full admin). Runs as the schema owner. The
+ * password is hashed with scrypt here and never stored, logged or returned. Re-running with a new password
+ * replaces the hash, which is how an admin password is reset.
+ */
+export async function seedAdmin(pool: Pool, tenantId: string, email: string, password: string): Promise<void> {
+  await pool.query(
+    `INSERT INTO admin_users (tenant_id, email, name, role, password_hash) VALUES ($1, lower($2), 'Admin', 'pm', $3)
+     ON CONFLICT (email) DO UPDATE SET password_hash = EXCLUDED.password_hash, active = true`,
+    [tenantId, email, await hashPassword(password)],
+  );
 }

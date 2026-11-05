@@ -13,3 +13,4 @@ export * from "./contracts.js";
 export * from "./secret.js";
 export * from "./config.js";
 export * from "./crypto.js";
+export * from "./password.js";
