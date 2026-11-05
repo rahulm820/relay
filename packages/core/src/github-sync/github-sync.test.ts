@@ -85,7 +85,7 @@ describe("github-sync stage", () => {
     const { messageId, ticketIds } = await createTickets(t, extraction());
     const tracker = fakeTracker();
 
-    const out = await syncWith(tracker.provider)(stageCtx(t, messageId, { ticket: { ticketIds } }, "github-sync"));
+    const out = await syncWith(tracker.provider)(stageCtx(t, messageId, { ticket: { ticketIds }, extract: extraction() }, "github-sync"));
 
     assert.equal(tracker.calls.length, 1);
     assert.equal(tracker.calls[0]?.repo, "acme/app");

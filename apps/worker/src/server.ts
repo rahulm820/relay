@@ -1,7 +1,7 @@
 // apps/worker: queue consumers (one per stage), the outbox dispatcher and a health endpoint.
 // The ticket stage is real (#8); other stage and outbox handlers are skeletons that later issues replace (see @relay/core).
 import { createServer } from "node:http";
-import { Orchestrator, OutboxDispatcher, Redis, createDefaultOutboxRegistry, createDefaultStageRegistry, githubSyncStage, ticketStage } from "@relay/core";
+import { Orchestrator, OutboxDispatcher, Redis, createDefaultOutboxRegistry, createDefaultStageRegistry, githubSyncStage, priorityStage, ticketStage } from "@relay/core";
 import { createPool, withTenant } from "@relay/db";
 import { createExtractor, createLlmProvider } from "@relay/llm";
 import { ConfigError, EnvSecretProvider, PIPELINE_VERSION, PROMPT_VERSION, loadConfig } from "@relay/shared";
@@ -43,6 +43,7 @@ if (!extract) console.warn(JSON.stringify({ msg: "llm not configured; using plac
 
 // Stages that are not implemented yet stay no-op skeletons (see createDefaultStageRegistry).
 const stages = createDefaultStageRegistry(extract ? { extract } : {});
+stages.register("priority", priorityStage());
 stages.register("ticket", ticketStage());
 // GitHub issue creation (#9). Tokens are read from env:NAME refs stored on the integration.
 stages.register("github-sync", githubSyncStage({ secrets: new EnvSecretProvider(process.env) }));
