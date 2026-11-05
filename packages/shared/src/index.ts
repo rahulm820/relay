@@ -12,3 +12,4 @@ export * from "./extraction.js";
 export * from "./contracts.js";
 export * from "./secret.js";
 export * from "./config.js";
+export * from "./crypto.js";

@@ -18,6 +18,8 @@ export interface TestDb {
   owner: Pool;
   /** The runtime login (relay_worker): what the worker uses. */
   worker: Pool;
+  /** The runtime login (relay_api): what the API uses. */
+  api: Pool;
   dispose(): Promise<void>;
 }
 
@@ -28,12 +30,15 @@ export async function createTestDb(): Promise<TestDb> {
   await admin.query(`CREATE DATABASE ${name}`);
   const owner = createPool(withDb(TEST_ADMIN_URL, name));
   await migrateUp(owner);
-  await setRolePasswords(owner, { relay_worker: "test-worker-pw" });
+  await setRolePasswords(owner, { relay_worker: "test-worker-pw", relay_api: "test-api-pw" });
   const worker = createPool(withDb(TEST_ADMIN_URL, name, "relay_worker", "test-worker-pw"));
+  const api = createPool(withDb(TEST_ADMIN_URL, name, "relay_api", "test-api-pw"));
   return {
     owner,
     worker,
+    api,
     async dispose() {
+      await api.end();
       await worker.end();
       await owner.end();
       await admin.query(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`);
