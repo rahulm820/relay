@@ -1,17 +1,22 @@
-// apps/worker: queue consumers (one per stage), the outbox dispatcher and a health endpoint.
+// apps/worker: queue consumers (one per stage), the outbox dispatcher, the GitHub reconcile job and health endpoints.
 // The ticket and notify stages (#8, #16) and the switch.create_room and client.send outbox handlers (#15, #16) are real; the rest are skeletons that
 // later issues replace (see @relay/core).
 import { createServer } from "node:http";
 import { createClientSendHandler, createPgClientSendStore } from "@relay/channels";
-import { Orchestrator, OutboxDispatcher, Redis, createDefaultOutboxRegistry, createDefaultStageRegistry, githubSyncStage, notifyStage, ticketStage } from "@relay/core";
+import {
+  Orchestrator, OutboxDispatcher, PeriodicJob, Redis, SyncMetrics, createDefaultOutboxRegistry, createDefaultStageRegistry,
+  createPgReconcileStore, getSyncHealth, githubSyncStage, notifyStage, reconcileOnce, reconcileSettingsFromEnv, ticketStage,
+} from "@relay/core";
 import { createPool, withTenant } from "@relay/db";
 import { createExtractor, createLlmProvider } from "@relay/llm";
 import { createSwitchRoomHandler, switchFromConfig } from "@relay/switch";
 import { ConfigError, EnvSecretProvider, PIPELINE_VERSION, PROMPT_VERSION, loadConfig } from "@relay/shared";
 
 let config;
+let reconcileSettings;
 try {
   config = loadConfig();
+  reconcileSettings = reconcileSettingsFromEnv();
 } catch (err) {
   // ConfigError names the offending variables and never their values.
   console.error(err instanceof ConfigError ? err.message : "failed to load configuration");
@@ -49,7 +54,8 @@ const stages = createDefaultStageRegistry(extract ? { extract } : {});
 stages.register("ticket", ticketStage());
 stages.register("notify", notifyStage()); // queues the acknowledgement / refusal / clarification (#16)
 // GitHub issue creation (#9). Tokens are read from env:NAME refs stored on the integration.
-stages.register("github-sync", githubSyncStage({ secrets: new EnvSecretProvider(process.env) }));
+const secrets = new EnvSecretProvider(process.env);
+stages.register("github-sync", githubSyncStage({ secrets }));
 const orchestrator = new Orchestrator({ pool, redis, stages });
 // Switch rooms are created by the outbox (switch.create_room), not by the pipeline's `switch` stage, which stays a
 // skeleton: the outbox row is the retry mechanism and is written in the same transaction as the ticket.
@@ -65,12 +71,36 @@ outboxHandlers.register("switch.create_room", createSwitchRoomHandler({
 // client.send (#16): bot tokens come from the environment variable each bot's credentials_ref names. A missing token
 // fails that row with code bot_token_missing; the worker itself still boots.
 outboxHandlers.register("client.send", createClientSendHandler({
-  store: createPgClientSendStore(pool), tokens: new EnvSecretProvider(process.env),
+  store: createPgClientSendStore(pool), tokens: secrets,
   ...(config.telegram.apiBaseUrl ? { apiBaseUrl: config.telegram.apiBaseUrl } : {}),
 }));
 const dispatcher = new OutboxDispatcher({ pool, registry: outboxHandlers });
 
+// GitHub reconcile (#20): repairs tracker_issues drift on a schedule. RECONCILE_INTERVAL_SECONDS=0 turns it off.
+const syncMetrics = new SyncMetrics();
+const reconcileStore = createPgReconcileStore({
+  pool, graceSeconds: reconcileSettings.graceSeconds, staleSeconds: reconcileSettings.staleSeconds, retryBudget: reconcileSettings.retryBudget,
+});
+const reconcileJob = reconcileSettings.intervalSeconds > 0
+  ? new PeriodicJob(async () => {
+      const summary = await reconcileOnce({ store: reconcileStore, secrets });
+      syncMetrics.record(summary);
+      // Counts only; a quiet pass logs nothing.
+      if (summary.examined > 0) console.log(JSON.stringify({ event: "reconcile_pass", ...summary }));
+    }, reconcileSettings.intervalSeconds * 1000, (err) => {
+      syncMetrics.recordFailure();
+      console.error(JSON.stringify({ event: "reconcile_pass_error", errorCode: err instanceof Error ? err.name : "unknown" }));
+    })
+  : undefined;
+
 const server = createServer((req, res) => {
+  // GitHub sync health (#20): outbox backlog age, failures, tracker row counts and alert flags. Counts only.
+  if (req.method === "GET" && req.url === "/healthz/sync") {
+    getSyncHealth(pool, reconcileSettings.retryBudget, { backlogSeconds: reconcileSettings.backlogAlertSeconds }, syncMetrics)
+      .then((health) => { res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" }); res.end(JSON.stringify(health)); })
+      .catch(() => { res.writeHead(503, { "content-type": "application/json" }); res.end(JSON.stringify({ error: "unavailable" })); });
+    return;
+  }
   if (req.method === "GET" && req.url === "/healthz") {
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify({ status: "ok", service: "worker", pipelineVersion: PIPELINE_VERSION }));
@@ -82,6 +112,7 @@ const server = createServer((req, res) => {
 
 await orchestrator.start();
 dispatcher.start();
+reconcileJob?.start();
 server.listen(config.worker.port, "0.0.0.0", () => {
   console.log(JSON.stringify({ msg: "worker listening", port: config.worker.port }));
 });
@@ -93,7 +124,7 @@ const shutdown = async (signal: string) => {
   console.log(JSON.stringify({ msg: "shutting down", signal }));
   server.close();
   // Stop taking new work, let in-flight stages and outbox handlers finish, then release connections.
-  await Promise.all([orchestrator.close(), dispatcher.close()]);
+  await Promise.all([orchestrator.close(), dispatcher.close(), reconcileJob?.close()]);
   await redis.quit();
   await pool.end();
   process.exit(0);

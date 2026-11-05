@@ -4,6 +4,7 @@ import {
   TrackerError,
   parseRepoRef,
   type ExternalIssue,
+  type FoundIssue,
   type IssueStatus,
   type NewIssue,
   type TrackerProvider,
@@ -22,6 +23,8 @@ export interface GitHubProviderOptions {
 
 interface GitHubIssueJson {
   id: number;
+  body?: string | null;
+  pull_request?: unknown;
   number: number;
   html_url: string;
   state?: "open" | "closed";
@@ -29,6 +32,7 @@ interface GitHubIssueJson {
 }
 
 const DEFAULT_TIMEOUT_MS = 10_000;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export class GitHubProvider implements TrackerProvider {
   readonly provider = "github" as const;
@@ -81,6 +85,18 @@ export class GitHubProvider implements TrackerProvider {
     };
   }
 
+  async findIssueByTicket(repo: string, ticketId: string): Promise<FoundIssue | null> {
+    const r = parseRepoRef(repo);
+    // The ticket id is a UUID and is validated before it goes into a search query.
+    if (!UUID.test(ticketId)) throw new TrackerError("validation", "ticket id must be a UUID");
+    const q = encodeURIComponent(`repo:${r.owner}/${r.name} is:issue in:body "${ticketId}"`);
+    const json = await this.request<{ items?: GitHubIssueJson[] }>("GET", `/search/issues?q=${q}&per_page=5`);
+    // Search is fuzzy: only accept an issue whose body really carries the exact id, and the oldest if several.
+    const hits = (json.items ?? []).filter((i) => !i.pull_request && typeof i.body === "string" && i.body.includes(ticketId));
+    const first = hits.sort((a, b) => a.number - b.number)[0];
+    return first ? { ...toExternal(first), state: first.state === "closed" ? "closed" : "open" } : null;
+  }
+
   onWebhook(_event: string, _payload: unknown): WebhookEvent | null {
     throw new TrackerError("not_implemented", "GitHub webhooks are handled in Issue #21");
   }
@@ -117,11 +133,20 @@ function toExternal(json: GitHubIssueJson): ExternalIssue {
 /** Maps an HTTP status to a TrackerError. Response bodies are not copied into the error. */
 export function statusError(res: Response): TrackerError {
   const rateLimited = res.status === 429 || (res.status === 403 && (res.headers.get("x-ratelimit-remaining") === "0" || res.headers.has("retry-after")));
-  if (rateLimited) return new TrackerError("rate_limited", "GitHub rate limit");
+  if (rateLimited) return new TrackerError("rate_limited", "GitHub rate limit", retryAfterMs(res));
   if (res.status === 401) return new TrackerError("auth", "GitHub rejected the token");
   if (res.status === 403) return new TrackerError("forbidden", "GitHub denied access (token scope or repo permission)");
   if (res.status === 404) return new TrackerError("not_found", "GitHub repository or issue not found");
   if (res.status === 422) return new TrackerError("validation", "GitHub rejected the request as invalid");
   if (res.status >= 500) return new TrackerError("server", `GitHub server error (${res.status})`);
   return new TrackerError("validation", `GitHub returned HTTP ${res.status}`);
+}
+
+/** Milliseconds GitHub asked us to wait: `Retry-After` (seconds) or the `X-RateLimit-Reset` epoch. Undefined if absent. */
+export function retryAfterMs(res: Response, now: number = Date.now()): number | undefined {
+  const retry = Number(res.headers.get("retry-after"));
+  if (res.headers.has("retry-after") && Number.isFinite(retry) && retry >= 0) return Math.round(retry * 1000);
+  const reset = Number(res.headers.get("x-ratelimit-reset"));
+  if (res.headers.has("x-ratelimit-reset") && Number.isFinite(reset) && reset > 0) return Math.max(0, reset * 1000 - now);
+  return undefined;
 }

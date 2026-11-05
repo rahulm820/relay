@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { listDueOutbox, withTenant, type Pool } from "@relay/db";
 import type { OutboxKind } from "@relay/shared";
 import { PermanentFailureError } from "../queue/index.js";
+import { computeBackoffMs, retryHintOf } from "./backoff.js";
 import type { OutboxRegistry } from "./registry.js";
 
 /** Ids, kinds, counts and error codes only. */
@@ -25,6 +26,8 @@ export interface OutboxDispatcherOptions {
   maxAttempts?: number;
   backoffBaseMs?: number;
   backoffMaxMs?: number;
+  /** Random source for backoff jitter, in [0, 1). Defaults to Math.random; injected by tests. */
+  random?: () => number;
   /** A 'processing' row older than this is presumed orphaned by a crash and taken over. Must exceed handler time. */
   leaseSeconds?: number;
   log?: (event: OutboxLogEvent) => void;
@@ -51,6 +54,7 @@ export class OutboxDispatcher {
   private readonly backoffBaseMs: number;
   private readonly backoffMaxMs: number;
   private readonly leaseSeconds: number;
+  private readonly random: (() => number) | undefined;
   private readonly log: (event: OutboxLogEvent) => void;
   private stopping = false;
   private loop: Promise<void> | undefined;
@@ -63,6 +67,7 @@ export class OutboxDispatcher {
     this.backoffBaseMs = opts.backoffBaseMs ?? 1000;
     this.backoffMaxMs = opts.backoffMaxMs ?? 300_000;
     this.leaseSeconds = opts.leaseSeconds ?? 60;
+    this.random = opts.random;
     this.log = opts.log ?? ((e) => console.log(JSON.stringify(e)));
   }
 
@@ -143,7 +148,10 @@ export class OutboxDispatcher {
         await finish("status = 'failed', last_error = $3", [message]);
         this.log({ event: "outbox_failed", ...ids, outcome: "failed", errorCode: errorCodeOf(err) });
       } else {
-        const delayMs = Math.min(this.backoffBaseMs * 2 ** (claimed.attempts - 1), this.backoffMaxMs);
+        // Exponential with jitter; a rate-limited handler (error carrying retryAfterMs) is held back at least that long.
+        const delayMs = computeBackoffMs(claimed.attempts, {
+          baseMs: this.backoffBaseMs, maxMs: this.backoffMaxMs, hintMs: retryHintOf(err), ...(this.random ? { random: this.random } : {}),
+        });
         await finish("status = 'pending', last_error = $3, next_attempt_at = now() + make_interval(secs => $4)", [message, delayMs / 1000]);
         this.log({ event: "outbox_retry", ...ids, outcome: "retry", errorCode: errorCodeOf(err) });
       }
