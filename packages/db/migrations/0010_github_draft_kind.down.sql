@@ -1,0 +1,1 @@
+-- Postgres cannot drop an enum value; the 'github.draft' value is left in place (same as 0008's github.comment).
