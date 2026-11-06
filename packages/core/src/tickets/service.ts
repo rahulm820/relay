@@ -95,14 +95,19 @@ async function currentTenant(c: Client): Promise<string> {
  * without the job that fills it. `approval_policy = human` stages the outbox row (`staged`), which the
  * dispatcher never picks up until an approval flips it to `pending`. A quarantined ticket gets no GitHub
  * rows: nothing leaves the platform until a human releases it (transitionTicket writes them on release).
+ *
+ * Code-aware drafting (#13): a bug ticket on a tenant with `code_aware_enabled` also gets a `github.draft`
+ * row, which retrieves read-only repo context and stores an `issue_drafts` draft for approval. It is
+ * always `pending` — drafting reads the repo, it does not write it — and it is independent of the
+ * general-sync row, which approval_policy may still stage.
  */
 export async function enqueueTicketOutbox(
   c: Client, tenantId: string, ticketId: string, traceId: string, detail?: ExtractedIssueDetail,
 ): Promise<void> {
-  const held = (await c.query<{ status: string }>("SELECT status FROM tickets WHERE id = $1", [ticketId])).rows[0]?.status === "quarantined";
-  if (!held) {
-    const integration = (await c.query<{ repo_ref: string | null; approval_policy: "auto" | "human" }>(
-      "SELECT repo_ref, approval_policy FROM integrations WHERE provider = 'github' AND status = 'active' LIMIT 1",
+  const ticket = (await c.query<{ status: string; category: Category }>("SELECT status, category FROM tickets WHERE id = $1", [ticketId])).rows[0];
+  if (ticket?.status !== "quarantined") {
+    const integration = (await c.query<{ repo_ref: string | null; approval_policy: "auto" | "human"; code_aware_enabled: boolean }>(
+      "SELECT repo_ref, approval_policy, code_aware_enabled FROM integrations WHERE provider = 'github' AND status = 'active' LIMIT 1",
     )).rows[0];
     if (integration?.repo_ref) {
       const key = githubIdempotencyKey(tenantId, ticketId, "general");
@@ -117,6 +122,12 @@ export async function enqueueTicketOutbox(
         { kind: "github.create_issue", tenantId, idempotencyKey: key, traceId, payload: { ticketId, ...(detail ? { detail } : {}) } },
         { status: integration.approval_policy === "human" ? "staged" : "pending" },
       );
+      if (integration.code_aware_enabled && ticket?.category === "bug") {
+        await enqueueOutbox(c, {
+          kind: "github.draft", tenantId, idempotencyKey: `draft:${tenantId}:${ticketId}`, traceId,
+          payload: { ticketId, ...(detail ? { detail } : {}) },
+        });
+      }
     }
   }
   await enqueueOutbox(c, { kind: "switch.create_room", tenantId, idempotencyKey: `switch:${tenantId}:${ticketId}`, traceId, payload: { ticketId } });

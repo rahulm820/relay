@@ -192,8 +192,11 @@ describe("failure semantics", () => {
 
   it("a slow Switch hits the client timeout and is transient", async () => {
     const { t, ticketId } = await newTicket();
-    mock.fault("POST /gateway/rooms", { delayMs: 500 });
+    // The status matters: a delay alone would let the mock finish the request (and create the room)
+    // hundreds of ms later, inside the NEXT test, after its beforeEach has reset mock.rooms.
+    mock.fault("POST /gateway/rooms", { delayMs: 500, status: 500 });
     await assert.rejects(handler({ client: client(100) })(input(t, ticketId)), (e) => !(e instanceof PermanentFailureError) && (e as { code: string }).code === "switch_timeout");
+    assert.equal(roomsFor(ticketId).length, 0, "the client gave up before any room existed");
   });
 
   it("a refused request (4xx) and bad credentials are permanent", async () => {

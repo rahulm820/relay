@@ -5,8 +5,8 @@ import { createServer } from "node:http";
 import { createClientSendHandler, createPgClientSendStore } from "@relay/channels";
 import {
   Orchestrator, OutboxDispatcher, PeriodicJob, Redis, SyncMetrics, createDefaultOutboxRegistry, createDefaultStageRegistry, dedupeStage, priorityStage,
-  createGithubCreateIssueHandler, createPgReconcileStore, getSyncHealth, githubSyncStage, notifyStage, reconcileOnce,
-  reconcileSettingsFromEnv, ticketStage,
+  createGithubCreateIssueHandler, createGithubDraftHandler, createPgReconcileStore, getSyncHealth, githubSyncStage, notifyStage, reconcileOnce,
+  reconcileSettingsFromEnv, ticketStage, DRAFT_PROMPT_VERSION,
 } from "@relay/core";
 import { createPool, withTenant } from "@relay/db";
 import { createEmbedder, createExtractor, createLlmProvider } from "@relay/llm";
@@ -76,6 +76,27 @@ if (!switchClient) console.warn(JSON.stringify({ msg: "switch integration disabl
 const outboxHandlers = createDefaultOutboxRegistry();
 // github.create_issue (#12): creates exactly one GitHub issue per ticket, with retries and a pre-create lookup.
 outboxHandlers.register("github.create_issue", createGithubCreateIssueHandler({ pool, secrets }));
+// github.draft (#13): retrieves read-only repo context and stores an issue_drafts draft (approval is #14).
+// Drafting needs the stronger model; without it the rows fail with llm_not_configured instead of vanishing.
+async function recordDraftRun(run: { tenantId: string; ticketId: string; model: string; promptVersion: string; inputHash: string; outputJson: unknown | null; confidence: number | null; latencyMs: number; costUsd: number }): Promise<string | undefined> {
+  return withTenant(pool, run.tenantId, async (c) => {
+    const { rows } = await c.query<{ id: string }>(
+      `INSERT INTO llm_runs (tenant_id, ticket_id, model, prompt_version, input_hash, output_json, confidence, latency_ms, cost)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
+      [run.tenantId, run.ticketId, run.model, run.promptVersion, run.inputHash,
+        run.outputJson === null ? null : JSON.stringify(run.outputJson),
+        run.confidence, run.latencyMs, run.costUsd],
+    );
+    return rows[0]?.id;
+  });
+}
+const strongModel = config.llm.strongModel;
+outboxHandlers.register("github.draft", createGithubDraftHandler({
+  pool, secrets,
+  ...(llmReady && strongModel
+    ? { llm: { provider: createLlmProvider(config.llm), model: strongModel, promptVersion: DRAFT_PROMPT_VERSION, recordRun: recordDraftRun } }
+    : {}),
+}));
 outboxHandlers.register("switch.create_room", createSwitchRoomHandler({
   pool, client: switchClient, missing: switchMissing,
   triagerAgent: config.switch.triagerAgent, notifierAgent: config.switch.notifierAgent,

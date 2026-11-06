@@ -23,6 +23,7 @@ export interface GitHubProviderOptions {
 
 interface GitHubIssueJson {
   id: number;
+  title?: string;
   body?: string | null;
   pull_request?: unknown;
   number: number;
@@ -31,7 +32,52 @@ interface GitHubIssueJson {
   labels?: ({ name?: string } | string)[];
 }
 
+interface GitHubContentJson {
+  content?: string;
+  encoding?: string;
+  path?: string;
+}
+
+interface GitHubCommitJson {
+  sha?: string;
+  commit?: { message?: string; author?: { date?: string } };
+}
+
+/** One retrieved file or document, truncated to a prompt-safe size (#13). */
+export interface RepoContextFile {
+  path: string;
+  content: string;
+}
+
+export interface RepoContextIssue {
+  number: number;
+  title: string;
+  state: "open" | "closed";
+  url: string;
+}
+
+export interface RepoContextCommit {
+  sha: string;
+  message: string;
+  date: string;
+}
+
+/** Read-only repository context for code-aware drafting (Issue #13, §4.10.2). GitHubProvider implements it. */
+export interface RepoContext {
+  files: RepoContextFile[];
+  docs: RepoContextFile[];
+  issues: RepoContextIssue[];
+  commits: RepoContextCommit[];
+}
+
+/** What the github.draft handler needs: context retrieval only. Injected in tests. */
+export interface RepoContextProvider {
+  retrieveContext(repo: string, query: string, opts?: { maxFiles?: number }): Promise<RepoContext>;
+}
+
 const DEFAULT_TIMEOUT_MS = 10_000;
+/** Per-file cap so a large file cannot blow the prompt budget. */
+const MAX_FILE_CHARS = 8_000;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export class GitHubProvider implements TrackerProvider {
@@ -97,6 +143,65 @@ export class GitHubProvider implements TrackerProvider {
     return first ? { ...toExternal(first), state: first.state === "closed" ? "closed" : "open" } : null;
   }
 
+  /**
+   * Read-only context for code-aware drafting (#13): files matching the query (code search + contents),
+   * the README, open/closed issues and recent commits. A missing README or an empty code search is
+   * normal and yields empty lists; a failed endpoint otherwise propagates as a TrackerError so the
+   * outbox retries. Contents are read with the token's `contents:read` scope only.
+   */
+  async retrieveContext(repo: string, query: string, opts: { maxFiles?: number } = {}): Promise<RepoContext> {
+    const r = parseRepoRef(repo);
+    const base = `/repos/${r.owner}/${r.name}`;
+    const maxFiles = opts.maxFiles ?? 5;
+
+    // 1. Relevant source files: code search for paths, then read each one.
+    let paths: string[] = [];
+    try {
+      const q = encodeURIComponent(`repo:${r.owner}/${r.name} ${query}`.trim());
+      const search = await this.request<{ items?: { path?: string }[] }>("GET", `/search/code?q=${q}&per_page=${maxFiles * 2}`);
+      paths = [...new Set((search.items ?? []).map((i) => i.path).filter((p): p is string => typeof p === "string" && p.length > 0))].slice(0, maxFiles);
+    } catch (err) {
+      // No matches (or a query GitHub rejects) is not an error: draft from what the other sources give.
+      if (!(err instanceof TrackerError && (err.code === "not_found" || err.code === "validation"))) throw err;
+    }
+    const files: RepoContextFile[] = [];
+    for (const path of paths) {
+      try {
+        const file = await this.request<GitHubContentJson>("GET", `${base}/contents/${path.split("/").map(encodeURIComponent).join("/")}`);
+        if (typeof file.content === "string") files.push({ path, content: decodeContent(file.content, file.encoding) });
+      } catch (err) {
+        if (!(err instanceof TrackerError && err.code === "not_found")) throw err; // file vanished between search and read
+      }
+    }
+
+    // 2. Documentation: the repo README, when there is one.
+    let docs: RepoContextFile[] = [];
+    try {
+      const readme = await this.request<GitHubContentJson>("GET", `${base}/readme`);
+      if (typeof readme.content === "string") docs = [{ path: readme.path ?? "README.md", content: decodeContent(readme.content, readme.encoding) }];
+    } catch (err) {
+      if (!(err instanceof TrackerError && err.code === "not_found")) throw err;
+    }
+
+    // 3. Open and closed issues (pull requests filtered out) — also the duplicate-detection corpus.
+    const issueList = await this.request<GitHubIssueJson[]>("GET", `${base}/issues?state=all&per_page=20&sort=updated`);
+    const issues: RepoContextIssue[] = issueList
+      .filter((i) => !i.pull_request)
+      .map((i) => ({ number: i.number, title: i.title ?? "", state: i.state === "closed" ? "closed" : "open", url: i.html_url }));
+
+    // 4. Recent commits.
+    const commitList = await this.request<GitHubCommitJson[]>("GET", `${base}/commits?per_page=10`);
+    const commits: RepoContextCommit[] = commitList
+      .filter((c): c is GitHubCommitJson & { sha: string } => typeof c.sha === "string")
+      .map((c) => ({
+        sha: c.sha,
+        message: (c.commit?.message ?? "").split("\n")[0] ?? "",
+        date: c.commit?.author?.date ?? "",
+      }));
+
+    return { files, docs, issues, commits };
+  }
+
   onWebhook(_event: string, _payload: unknown): WebhookEvent | null {
     throw new TrackerError("not_implemented", "GitHub webhooks are handled in Issue #21");
   }
@@ -128,6 +233,12 @@ export class GitHubProvider implements TrackerProvider {
 
 function toExternal(json: GitHubIssueJson): ExternalIssue {
   return { id: String(json.id), number: json.number, url: json.html_url };
+}
+
+/** Decodes a GitHub contents payload (base64 by default) and truncates it for the prompt. */
+function decodeContent(content: string, encoding: string | undefined): string {
+  const text = encoding === "base64" ? Buffer.from(content.replace(/\n/g, ""), "base64").toString("utf8") : content;
+  return text.slice(0, MAX_FILE_CHARS);
 }
 
 /** Maps an HTTP status to a TrackerError. Response bodies are not copied into the error. */
