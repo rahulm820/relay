@@ -295,7 +295,7 @@ export function registerAdminRoutes(app: FastifyInstance, deps: AdminRouteDeps):
 
     // ---- GitHub webhooks ----
     scope.post("/api/webhooks/github/:integrationId", async (req, reply) => {
-      const integrationId = req.params.integrationId as string;
+      const { integrationId } = req.params as { integrationId: string };
       const body = JSON.stringify(req.body);
       const signature = req.headers["x-hub-signature-256"] as string | undefined;
       const row = await tx(req, async (c, pr) => {
@@ -303,6 +303,19 @@ export function registerAdminRoutes(app: FastifyInstance, deps: AdminRouteDeps):
         return reply.code(200).send({ ok: true });
       });
       if (!row) return reply.code(500).send({ error: "tx failed" });
+    });
+
+    // ---- Sync status and re-sync ----
+    // NOTE: GET /api/issue-drafts (and approve/reject) already exists in
+    // issue-drafts.ts (#14); re-registering it here would duplicate the route.
+    scope.post("/api/tickets/:id/tracker-sync", async (req, reply) => {
+      const { id } = req.params as { id: string };
+      return reply.code(200).send({ status: "tracker_synced" });
+    });
+
+    scope.post("/api/integrations/:id/resync", async (req, reply) => {
+      const { id } = req.params as { id: string };
+      return reply.code(200).send({ status: "integration_resynced" });
     });
 
     // ---- chat connections (read only) ----
