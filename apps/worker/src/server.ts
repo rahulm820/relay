@@ -4,7 +4,7 @@
 import { createServer } from "node:http";
 import { createClientSendHandler, createPgClientSendStore } from "@relay/channels";
 import {
-  Orchestrator, OutboxDispatcher, PeriodicJob, Redis, SyncMetrics, createDefaultOutboxRegistry, createDefaultStageRegistry,
+  Orchestrator, OutboxDispatcher, PeriodicJob, Redis, SyncMetrics, createDefaultOutboxRegistry, createDefaultStageRegistry, priorityStage,
   createPgReconcileStore, getSyncHealth, githubSyncStage, notifyStage, reconcileOnce, reconcileSettingsFromEnv, ticketStage,
 } from "@relay/core";
 import { createPool, withTenant } from "@relay/db";
@@ -51,6 +51,7 @@ if (!extract) console.warn(JSON.stringify({ msg: "llm not configured; using plac
 
 // Stages that are not implemented yet stay no-op skeletons (see createDefaultStageRegistry).
 const stages = createDefaultStageRegistry(extract ? { extract } : {});
+stages.register("priority", priorityStage());
 stages.register("ticket", ticketStage());
 stages.register("notify", notifyStage()); // queues the acknowledgement / refusal / clarification (#16)
 // GitHub issue creation (#9). Tokens are read from env:NAME refs stored on the integration.
