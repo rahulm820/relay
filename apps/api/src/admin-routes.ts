@@ -293,6 +293,18 @@ export function registerAdminRoutes(app: FastifyInstance, deps: AdminRouteDeps):
       return row ? { bot: botDto(row) } : notFound(reply);
     });
 
+    // ---- GitHub webhooks ----
+    scope.post("/api/webhooks/github/:integrationId", async (req, reply) => {
+      const integrationId = req.params.integrationId as string;
+      const body = JSON.stringify(req.body);
+      const signature = req.headers["x-hub-signature-256"] as string | undefined;
+      const row = await tx(req, async (c, pr) => {
+        if (!signature) return reply.code(401).send({ error: "missing signature" });
+        return reply.code(200).send({ ok: true });
+      });
+      if (!row) return reply.code(500).send({ error: "tx failed" });
+    });
+
     // ---- chat connections (read only) ----
     const chatSql = "SELECT id, provider, workspace_ref, default_channel_ref, switch_bridge_ref, credentials_ref, status FROM chat_connections";
     const chatDto = (r: any) => ({ id: r.id, provider: r.provider, workspaceRef: r.workspace_ref, defaultChannelRef: r.default_channel_ref, switchBridgeRef: r.switch_bridge_ref, credentialsRef: r.credentials_ref, status: r.status });
