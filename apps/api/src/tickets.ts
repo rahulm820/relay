@@ -1,6 +1,6 @@
 import {
   StatusConflictError, TicketNotFoundError, TicketValidationError,
-  getTicket, getTicketEvents, listTickets, patchTicket, transitionTicket,
+  approveGithubSync, getTicket, getTicketEvents, listTickets, patchTicket, transitionTicket,
 } from "@relay/core";
 import { withTenant, type Pool } from "@relay/db";
 import { CATEGORIES, IllegalTransitionError, PRIORITIES, TICKET_STATUSES } from "@relay/shared";
@@ -101,6 +101,24 @@ export function registerTicketRoutes(app: FastifyInstance, deps: TicketRouteDeps
       try {
         const actor = principals.get(req)!.actor;
         return { ticket: await tenantTx(req, (c) => patchTicket(c, p.data.id, b.data, actor)) };
+      } catch (err) { return handle(reply, err); }
+    });
+
+    // Releases a staged GitHub sync (approval_policy = human) to the outbox dispatcher (#12).
+    scope.post("/api/tickets/:id/github-sync/approve", async (req, reply) => {
+      const p = IdParams.safeParse(req.params);
+      if (!p.success) return invalid(reply, p.error);
+      try {
+        const principal = principals.get(req)!;
+        const approved = await tenantTx(req, async (c) => {
+          const ok = await approveGithubSync(c, principal.tenantId, p.data.id);
+          if (ok) await c.query(
+            "INSERT INTO audit_log (tenant_id, actor, action, target, diff) VALUES (relay_current_tenant(), $1, $2, $3, $4)",
+            [`user:${principal.userId}`, "tickets.approve_github_sync", `tickets:${p.data.id}`, JSON.stringify({ fields: ["github_sync"] })]);
+          return ok;
+        });
+        if (!approved) return reply.code(409).send({ error: "conflict", message: "no staged github sync for this ticket" });
+        return { approved: true };
       } catch (err) { return handle(reply, err); }
     });
 

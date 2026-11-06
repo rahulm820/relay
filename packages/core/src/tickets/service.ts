@@ -4,6 +4,7 @@ import {
   type ActorType, type Category, type Priority, type PrioritySource, type Role, type TicketStatus,
 } from "@relay/shared";
 import { enqueueOutbox } from "../outbox/index.js";
+import type { ExtractedIssueDetail } from "../github-sync/issue.js";
 import { notifyClientStatusChange } from "./client-notify.js";
 import { StatusConflictError, TicketNotFoundError, TicketValidationError } from "./errors.js";
 
@@ -85,12 +86,39 @@ async function currentTenant(c: Client): Promise<string> {
 // ---------------------------------------------------------------------------------------------------
 
 /**
- * Writes the outbox rows that make a ticket reach GitHub and Switch. Payloads carry ids only. Call it in the
- * SAME transaction as the ticket insert (or the release from quarantine). Safe to repeat: the unique
- * idempotency keys make a second call a no-op. client.send is Issue #16's job, not written here.
+ * Writes the outbox rows that make a ticket reach GitHub and Switch. Call it in the SAME transaction as the
+ * ticket insert (or the release from quarantine). Safe to repeat: the unique idempotency keys make a second
+ * call a no-op. client.send is Issue #16's job, not written here.
+ *
+ * GitHub (#12): only an active integration with a repo selected gets rows, and both of them together — the
+ * `tracker_issues` link (pending) and the `github.create_issue` outbox row, so the link can never exist
+ * without the job that fills it. `approval_policy = human` stages the outbox row (`staged`), which the
+ * dispatcher never picks up until an approval flips it to `pending`. A quarantined ticket gets no GitHub
+ * rows: nothing leaves the platform until a human releases it (transitionTicket writes them on release).
  */
-export async function enqueueTicketOutbox(c: Client, tenantId: string, ticketId: string, traceId: string): Promise<void> {
-  await enqueueOutbox(c, { kind: "github.create_issue", tenantId, idempotencyKey: githubIdempotencyKey(tenantId, ticketId, "general"), traceId, payload: { ticketId } });
+export async function enqueueTicketOutbox(
+  c: Client, tenantId: string, ticketId: string, traceId: string, detail?: ExtractedIssueDetail,
+): Promise<void> {
+  const held = (await c.query<{ status: string }>("SELECT status FROM tickets WHERE id = $1", [ticketId])).rows[0]?.status === "quarantined";
+  if (!held) {
+    const integration = (await c.query<{ repo_ref: string | null; approval_policy: "auto" | "human" }>(
+      "SELECT repo_ref, approval_policy FROM integrations WHERE provider = 'github' AND status = 'active' LIMIT 1",
+    )).rows[0];
+    if (integration?.repo_ref) {
+      const key = githubIdempotencyKey(tenantId, ticketId, "general");
+      await c.query(
+        `INSERT INTO tracker_issues (tenant_id, ticket_id, provider, repo_ref, sync_mode, sync_status, idempotency_key)
+         VALUES (relay_current_tenant(), $1, 'github', $2, 'general', 'pending', $3)
+         ON CONFLICT (idempotency_key) DO NOTHING`,
+        [ticketId, integration.repo_ref, key],
+      );
+      await enqueueOutbox(
+        c,
+        { kind: "github.create_issue", tenantId, idempotencyKey: key, traceId, payload: { ticketId, ...(detail ? { detail } : {}) } },
+        { status: integration.approval_policy === "human" ? "staged" : "pending" },
+      );
+    }
+  }
   await enqueueOutbox(c, { kind: "switch.create_room", tenantId, idempotencyKey: `switch:${tenantId}:${ticketId}`, traceId, payload: { ticketId } });
 }
 
@@ -155,6 +183,8 @@ export interface NewTicket {
   productArea?: string | null;
   /** Embedding of title and summary, stored for duplicate detection (#11). */
   embedding?: number[] | null;
+  /** Reproduction detail from the extraction, carried in the outbox payload so the GitHub issue keeps it (#12). */
+  detail?: ExtractedIssueDetail;
 }
 
 export interface CreatedTicket {
@@ -214,7 +244,7 @@ export async function createTicketsForMessage(
     if (t.quarantineReason) {
       await transitionTicket(c, { ticketId, to: "quarantined", actor: input.actor, reason: t.quarantineReason });
     }
-    if (t.outbox) await enqueueTicketOutbox(c, input.tenantId, ticketId, input.traceId);
+    if (t.outbox) await enqueueTicketOutbox(c, input.tenantId, ticketId, input.traceId, t.detail);
     out.push({ ticketId, created: true });
   }
   return out;

@@ -66,7 +66,7 @@ export type PipelineStage = (typeof PIPELINE_STAGES)[number];
 export const QUEUE_STAGES = ["ingest", ...PIPELINE_STAGES] as const;
 export type QueueStage = (typeof QUEUE_STAGES)[number];
 
-export const OUTBOX_STATUSES = ["pending", "processing", "done", "failed"] as const;
+export const OUTBOX_STATUSES = ["pending", "staged", "processing", "done", "failed"] as const;
 export type OutboxStatus = (typeof OUTBOX_STATUSES)[number];
 
 export const BOT_STATUSES = ["pending", "active", "error", "revoked"] as const;

@@ -91,6 +91,7 @@ export function ticketStage(opts: TicketStageOptions = {}): StageHandler {
           outbox: !sensitive,
           productArea: issue.product_area,
           embedding: quarantineReason ? null : embedding,
+          detail: { steps_to_reproduce: issue.steps_to_reproduce, expected: issue.expected, actual: issue.actual, missing_info: issue.missing_info },
         };
       });
     }
