@@ -12,10 +12,10 @@
 //    stable error code, and the stage returns normally.
 //  - No database transaction is open while the HTTP call runs.
 import { z } from "zod";
-import { GitHubProvider, TrackerError, buildIssueBody, labelsFor, parseLabelMap, type TrackerProvider } from "@relay/trackers";
+import { GitHubProvider, TrackerError, parseLabelMap, type TrackerProvider } from "@relay/trackers";
 import { ExtractionOutcomeSchema, type SecretProvider } from "@relay/shared";
-import type { Client } from "@relay/db";
 import type { StageContext, StageHandler } from "../orchestrator/index.js";
+import { composeIssue, loadTicket, recordIssueLinked, resolveToken, type ExtractedIssueDetail } from "./issue.js";
 
 export interface GithubSyncOptions {
   /** Resolves integrations.credentials_ref (e.g. env:GITHUB_TOKEN) to the token. */
@@ -33,25 +33,12 @@ interface IntegrationRow {
   approval_policy: "auto" | "human";
 }
 
-interface TicketRow {
-  id: string;
-  title: string;
-  summary: string;
-  category: string;
-  priority: string;
-  priority_reason: string | null;
-  status: string;
-  affected_client_count: number;
-  tracker_ref: string | null;
-  tier: string | null;
-}
-
 export type TicketSyncOutcome =
   | { ticketId: string; status: "created"; url: string; number: number }
   | { ticketId: string; status: "failed"; error: string }
   | { ticketId: string; status: "skipped"; reason: string };
 
-const ACTOR = { type: "system", ref: "pipeline:github-sync" } as const;
+const ACTOR_REF = "pipeline:github-sync";
 
 export function githubSyncStage(opts: GithubSyncOptions): StageHandler {
   const createProvider = opts.createProvider ?? ((token: string) => new GitHubProvider({ token }));
@@ -93,21 +80,12 @@ export function githubSyncStage(opts: GithubSyncOptions): StageHandler {
   };
 }
 
-async function resolveToken(secrets: SecretProvider, ref: string | null): Promise<string | undefined> {
-  if (!ref) return undefined;
-  try {
-    return (await secrets.get(ref))?.reveal();
-  } catch {
-    return undefined; // unsupported scheme or unreadable ref: treated as missing credentials
-  }
-}
-
 interface SyncInput {
   ticketId: string;
   repo: string;
   labelMap: ReturnType<typeof parseLabelMap>;
   token: string | undefined;
-  issue: { steps_to_reproduce: string[]; expected: string | null; actual: string | null; missing_info: string[] } | undefined;
+  issue: ExtractedIssueDetail | undefined;
   createProvider: (token: string) => TrackerProvider;
 }
 
@@ -120,7 +98,8 @@ async function syncOne(ctx: StageContext, input: SyncInput): Promise<TicketSyncO
     status: (await c.query<{ sync_status: string }>("SELECT sync_status FROM tracker_issues WHERE idempotency_key = $1", [idempotencyKey])).rows[0]?.sync_status,
   }));
   if (!before.ticket) return { ticketId: input.ticketId, status: "skipped", reason: "ticket_not_found" };
-  if (before.status === "created") return { ticketId: input.ticketId, status: "skipped", reason: "already_created" };
+  // `closed` means the issue exists on GitHub and was closed there (set by reconcile or the webhook); never open another.
+  if (before.status === "created" || before.status === "closed") return { ticketId: input.ticketId, status: "skipped", reason: "already_created" };
   if (before.ticket.status === "quarantined") return { ticketId: input.ticketId, status: "skipped", reason: "quarantined" };
 
   // Claim the row. ON CONFLICT keeps the existing row, so a concurrent run cannot create a second one.
@@ -139,55 +118,19 @@ async function syncOne(ctx: StageContext, input: SyncInput): Promise<TicketSyncO
 
   if (!input.token) return fail("missing_credentials");
 
-  const body = buildIssueBody({
-    ticketId: ticket.id,
-    title: ticket.title,
-    summary: ticket.summary,
-    category: ticket.category,
-    priority: ticket.priority,
-    priorityReason: ticket.priority_reason,
-    clientTier: ticket.tier,
-    affectedClientCount: ticket.affected_client_count,
-    stepsToReproduce: input.issue?.steps_to_reproduce,
-    expected: input.issue?.expected ?? null,
-    actual: input.issue?.actual ?? null,
-    missingInfo: input.issue?.missing_info,
-  });
-  const labels = labelsFor(ticket, input.labelMap);
+  const { title, body, labels } = composeIssue(ticket, input.labelMap, input.issue);
 
   // No transaction is open during the network call.
   let created;
   try {
-    created = await input.createProvider(input.token).createIssue(input.repo, { title: ticket.title, body, labels });
+    created = await input.createProvider(input.token).createIssue(input.repo, { title, body, labels });
   } catch (err) {
     return fail(err instanceof TrackerError ? err.code : "unknown");
   }
 
-  await ctx.db(async (c) => {
-    await c.query(
-      `UPDATE tracker_issues SET sync_status = 'created', external_issue_id = $2, external_issue_number = $3,
-         external_issue_url = $4, last_synced_at = now(), last_error = NULL
-       WHERE idempotency_key = $1`,
-      [idempotencyKey, created.id, created.number, created.url],
-    );
-    await c.query("UPDATE tickets SET tracker_ref = $2 WHERE id = $1", [input.ticketId, created.url]);
-    await c.query(
-      `INSERT INTO ticket_events (tenant_id, ticket_id, type, actor_type, actor_ref, payload, created_at)
-       VALUES (relay_current_tenant(), $1, 'tracker.issue_created', $2, $3, $4, clock_timestamp())`,
-      [input.ticketId, ACTOR.type, ACTOR.ref, JSON.stringify({ provider: "github", repo: input.repo, number: created.number, url: created.url })],
-    );
-  });
+  await ctx.db((c) => recordIssueLinked(c, {
+    ticketId: input.ticketId, idempotencyKey, repo: input.repo, issue: created, eventType: "tracker.issue_created", actorRef: ACTOR_REF,
+  }));
 
   return { ticketId: input.ticketId, status: "created", url: created.url, number: created.number };
-}
-
-async function loadTicket(c: Client, ticketId: string): Promise<TicketRow | null> {
-  const { rows } = await c.query<TicketRow>(
-    `SELECT t.id, t.title, t.summary, t.category, t.priority, t.priority_reason, t.status,
-            t.affected_client_count, t.tracker_ref, cl.tier
-       FROM tickets t LEFT JOIN clients cl ON cl.id = t.client_id
-      WHERE t.id = $1`,
-    [ticketId],
-  );
-  return rows[0] ?? null;
 }

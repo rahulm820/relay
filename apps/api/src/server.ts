@@ -1,4 +1,4 @@
-// apps/api: HTTP API and webhooks. Admin routes arrive in Issue #17.
+// apps/api: HTTP API (auth, tickets, configuration) and the Telegram webhook.
 import { randomUUID } from "node:crypto";
 import type { Writable } from "node:stream";
 import { ChannelRegistry, TelegramAdapter, baselineRedact, type Redactor } from "@relay/channels";
@@ -6,7 +6,12 @@ import { QueueProducer, Redis } from "@relay/core";
 import { createPool, type Pool } from "@relay/db";
 import { ConfigError, PIPELINE_VERSION, loadConfig, parseEncryptionKey } from "@relay/shared";
 import Fastify, { type FastifyError } from "fastify";
-import { denyAll, devAuthenticator, type Authenticator } from "./auth.js";
+import { registerAdminRoutes } from "./admin-routes.js";
+import type { Authenticator } from "./auth.js";
+import { registerAuthRoutes } from "./auth-routes.js";
+import { pgAuthStore } from "./pg-auth-store.js";
+import { registerApiSecurity } from "./security.js";
+import { LoginThrottle, sessionAuthenticator, type AuthStore } from "./session.js";
 import { registerTelegramWebhook } from "./telegram-webhook.js";
 import { registerTicketRoutes } from "./tickets.js";
 
@@ -21,9 +26,16 @@ export interface ServerDeps {
   /** Where log lines go (tests capture them). Defaults to stdout. */
   logStream?: Writable;
   logLevel?: string;
-  /** Resolves the caller of /api routes. Defaults to deny-all (401) until Issue #17 plugs in real auth. */
+  /** Admin API settings (see ADMIN_* in .env.example). */
+  admin?: { allowedOrigins: string[]; sessionTtlHours: number; sessionIdleMinutes: number; cookieSecure: boolean };
+  /** Session and user storage. Defaults to Postgres; tests can supply one in memory. */
+  authStore?: AuthStore;
+  /** Replaces the cookie-session authenticator (tests only). */
   authenticate?: Authenticator;
+  throttle?: LoginThrottle;
 }
+
+const DEFAULT_ADMIN = { allowedOrigins: ["http://localhost:3000"], sessionTtlHours: 12, sessionIdleMinutes: 60, cookieSecure: false };
 
 export function buildServer(deps: ServerDeps) {
   const app = Fastify({
@@ -34,6 +46,19 @@ export function buildServer(deps: ServerDeps) {
       ...(deps.logStream ? { stream: deps.logStream } : {}),
     },
     genReqId: () => randomUUID(),
+    bodyLimit: 128 * 1024,
+  });
+  const admin = deps.admin ?? DEFAULT_ADMIN;
+
+  // A JSON request with an empty body (a logout or delete sent with a JSON content type) means "no body", not an
+  // error; genuinely malformed JSON is still a generic 400.
+  app.addContentTypeParser("application/json", { parseAs: "string" }, (_req, body, done) => {
+    if (body === "") return done(null, undefined);
+    try {
+      done(null, JSON.parse(body as string));
+    } catch {
+      done(Object.assign(new Error("invalid json"), { statusCode: 400 }), undefined);
+    }
   });
 
   // Never echo parser or database error text to the caller, and never log it: it could quote the body.
@@ -57,7 +82,16 @@ export function buildServer(deps: ServerDeps) {
     redact: deps.redact ?? baselineRedact,
     encryptionKey: deps.encryptionKey,
   });
-  registerTicketRoutes(app, { pool: deps.pool, authenticate: deps.authenticate ?? denyAll });
+
+  // /api: browser protections first (CORS, CSRF), then sign-in, then the routes that need a session.
+  const store = deps.authStore ?? pgAuthStore(deps.pool);
+  const authenticate = deps.authenticate ?? sessionAuthenticator(store, admin.sessionIdleMinutes * 60);
+  registerApiSecurity(app, { allowedOrigins: admin.allowedOrigins });
+  registerAuthRoutes(app, {
+    store, authenticate, throttle: deps.throttle ?? new LoginThrottle(), sessionTtlHours: admin.sessionTtlHours, cookieSecure: admin.cookieSecure,
+  });
+  registerTicketRoutes(app, { pool: deps.pool, authenticate });
+  registerAdminRoutes(app, { pool: deps.pool, authenticate });
   return app;
 }
 
@@ -75,24 +109,13 @@ async function main() {
     process.exit(1);
   }
 
-  let authenticate: Authenticator | undefined;
-  if (config.devAuth.enabled) {
-    // Dev auth treats every caller as one tenant, so it must never be reachable from outside this machine.
-    if (!["127.0.0.1", "localhost", "::1"].includes(config.api.host)) {
-      console.error("Invalid configuration: DEV_AUTH_ENABLED requires API_HOST to be a loopback address");
-      process.exit(1);
-    }
-    authenticate = devAuthenticator(config.devAuth.tenantId!);
-    console.warn(JSON.stringify({ msg: "DEV AUTH ENABLED: every request is treated as one fixed tenant. Local development only." }));
-  }
-
   // DATABASE_URL must be the relay_api login (RLS applies); never the schema owner.
   const pool = createPool(config.databaseUrl);
   const redis = new Redis(config.redisUrl);
   redis.on("error", (err) => console.error(JSON.stringify({ msg: "redis error", code: err.name })));
   const app = buildServer({
     pool, producer: new QueueProducer(redis), encryptionKey: parseEncryptionKey(rawKey.reveal()), logLevel: config.logLevel,
-    ...(authenticate && { authenticate }),
+    admin: config.admin,
   });
 
   let shuttingDown = false;

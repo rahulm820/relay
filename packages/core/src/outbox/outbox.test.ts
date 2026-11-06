@@ -14,7 +14,8 @@ let db: TestDb;
 before(async () => { db = await createTestDb(); });
 after(async () => { await db.dispose(); });
 
-const FAST = { pollIntervalMs: 15, backoffBaseMs: 40, backoffMaxMs: 400, leaseSeconds: 60 };
+// random: () => 1 pins the jitter to the top of its range, so delays are exactly base * 2^(attempt-1).
+const FAST = { pollIntervalMs: 15, backoffBaseMs: 40, backoffMaxMs: 400, leaseSeconds: 60, random: () => 1 - Number.EPSILON };
 
 async function addRow(tenantId: string, kind: OutboxKind = "github.create_issue", key = randomUUID()): Promise<{ id: string; key: string }> {
   const r = await withTenant(db.worker, tenantId, (c) => enqueueOutbox(c, { kind, tenantId, idempotencyKey: key, traceId: "trace-1", payload: { ticketId: "k1" } }));
@@ -103,6 +104,28 @@ describe("OutboxDispatcher", () => {
     assert.equal(last.attempts, 3);
     assert.equal(calls, 3);
     assert.equal(await d.runOnce(), 0, "a failed row is never picked up again");
+  });
+
+  it("jitters the retry delay inside [step/2, step] when no random source is injected", async () => {
+    const t = await createTenant(db.owner);
+    const ids = await Promise.all(Array.from({ length: 6 }, () => addRow(t.tenantId)));
+    // Real Math.random: a 10 s step must land the next attempt between ~5 s and ~10 s away.
+    await dispatcher(registryWith(async () => { throw new Error("boom"); }), { backoffBaseMs: 10_000, backoffMaxMs: 60_000, random: Math.random, batchSize: 6 }).runOnce();
+    for (const { id } of ids) {
+      const r = await row(id);
+      assert.equal(r.status, "pending");
+      assert.ok(r.delay > 4.5 && r.delay <= 10.1, `delay ${r.delay} outside the jitter window`);
+    }
+  });
+
+  it("holds a rate-limited row back at least as long as the remote asked", async () => {
+    const t = await createTenant(db.owner);
+    const { id } = await addRow(t.tenantId);
+    // Backoff alone would be ~40 ms; the error asks for 30 s.
+    await dispatcher(registryWith(async () => { throw Object.assign(new Error("rate limited"), { code: "rate_limited", retryAfterMs: 30_000 }); })).runOnce();
+    const r = await row(id);
+    assert.equal(r.status, "pending");
+    assert.ok(r.delay > 28 && r.delay <= 30.5, `delay ${r.delay} should honour the 30 s hint`);
   });
 
   it("a permanent failure fails the row immediately", async () => {

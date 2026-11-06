@@ -42,7 +42,7 @@ export async function ingestMessage(
     const client = await c.query<{ id: string }>(
       `INSERT INTO clients (tenant_id, display_name, channel, channel_user_ref)
        VALUES ($1, $2, $3, $4)
-       ON CONFLICT (tenant_id, channel, channel_user_ref) DO UPDATE SET channel = EXCLUDED.channel
+       ON CONFLICT (tenant_id, channel, channel_user_ref) DO UPDATE SET channel = EXCLUDED.channel, contact_blocked_at = NULL
        RETURNING id`,
       [tenantId, `${msg.channel}:${msg.senderRef}`, msg.channel, msg.senderRef],
     );

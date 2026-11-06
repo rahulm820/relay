@@ -23,7 +23,9 @@ afterEach(async () => { await Promise.all(apps.map((a) => a.close())); apps = []
 /** TEST-ONLY authenticator: the tenant comes from a header. Production never does this. */
 const testAuth: Authenticator = async (req) => {
   const tenantId = req.headers["x-test-tenant"];
-  return typeof tenantId === "string" ? { tenantId, actor: { type: "human", ref: "api-tester" } } : null;
+  return typeof tenantId === "string"
+    ? { tenantId, userId: "00000000-0000-4000-8000-0000000000aa", email: "t@example.test", name: "Tester", role: "pm", actor: { type: "human", ref: "api-tester" } }
+    : null;
 };
 function server(auth: "test" | "default" = "test") {
   lines = [];
@@ -37,7 +39,11 @@ function server(auth: "test" | "default" = "test") {
 const call = (app: ReturnType<typeof buildServer>, method: "GET" | "POST" | "PATCH", url: string, tenant: TestTenant | string | null, body?: unknown) =>
   app.inject({
     method, url,
-    headers: { ...(tenant ? { "x-test-tenant": typeof tenant === "string" ? tenant : tenant.tenantId } : {}), ...(body !== undefined ? { "content-type": "application/json" } : {}) },
+    headers: {
+      ...(tenant ? { "x-test-tenant": typeof tenant === "string" ? tenant : tenant.tenantId } : {}),
+      ...(body !== undefined ? { "content-type": "application/json" } : {}),
+      ...(method !== "GET" ? { "x-requested-with": "relay-admin" } : {}), // the CSRF header every browser call must send
+    },
     ...(body !== undefined ? { payload: JSON.stringify(body) } : {}),
   });
 
@@ -199,9 +205,34 @@ describe("changing tickets", () => {
     const app = server();
     const t = await createTenant(db.owner);
     const [id] = await makeTickets(t, [{}]);
-    const res = await app.inject({ method: "PATCH", url: `/api/tickets/${id}`, headers: { "x-test-tenant": t.tenantId, "content-type": "application/json" }, payload: "{nope" });
+    const res = await app.inject({ method: "PATCH", url: `/api/tickets/${id}`, headers: { "x-test-tenant": t.tenantId, "content-type": "application/json", "x-requested-with": "relay-admin" }, payload: "{nope" });
     assert.equal(res.statusCode, 400);
     noTrace(res.body);
+  });
+});
+
+describe("status changes through the API queue a client update", () => {
+  const clientRows = async (id: string) => (await db.owner.query("SELECT payload FROM outbox WHERE kind = 'client.send' AND payload->>'ticketId' = $1", [id])).rows;
+
+  it("the transition and PATCH routes queue exactly one update for a notifying status and none for a silent one", async () => {
+    const app = server();
+    const t = await createTenant(db.owner);
+    const [viaTransition, viaPatch] = (await makeTickets(t, [{}, {}])) as [string, string];
+    await db.owner.query("UPDATE tickets SET status = 'assigned' WHERE id = ANY($1)", [[viaTransition, viaPatch]]);
+    assert.equal((await call(app, "POST", `/api/tickets/${viaTransition}/transition`, t, { to: "in_progress" })).statusCode, 200);
+    assert.equal((await call(app, "PATCH", `/api/tickets/${viaPatch}`, t, { status: "in_progress" })).statusCode, 200);
+    assert.deepEqual((await clientRows(viaTransition)).map((r) => r.payload.status), ["in_progress"]);
+    assert.deepEqual((await clientRows(viaPatch)).map((r) => r.payload.status), ["in_progress"]);
+    assert.equal((await call(app, "POST", `/api/tickets/${viaTransition}/transition`, t, { to: "in_review" })).statusCode, 200);
+    assert.equal((await clientRows(viaTransition)).length, 1, "in_review is silent");
+  });
+
+  it("a rejected transition queues nothing", async () => {
+    const app = server();
+    const t = await createTenant(db.owner);
+    const id = (await makeTickets(t, [{}]))[0]!;
+    assert.equal((await call(app, "POST", `/api/tickets/${id}/transition`, t, { to: "resolved" })).statusCode, 409);
+    assert.equal((await clientRows(id)).length, 0);
   });
 });
 

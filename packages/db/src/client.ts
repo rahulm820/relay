@@ -49,3 +49,54 @@ export async function listDueOutbox(pool: Pool, limit: number, leaseSeconds = 60
   const { rows } = await pool.query<{ id: string; tenant_id: string }>("SELECT * FROM relay_due_outbox($1, $2)", [limit, leaseSeconds]);
   return rows.map((r) => ({ id: r.id, tenantId: r.tenant_id }));
 }
+
+/** Tracker rows the reconcile job should examine, across tenants. See migration 0007 for the selection rules. */
+export async function listReconcileCandidates(
+  pool: Pool, opts: { limit: number; graceSeconds: number; staleSeconds: number; retryBudget: number },
+): Promise<{ id: string; tenantId: string }[]> {
+  const { rows } = await pool.query<{ id: string; tenant_id: string }>(
+    "SELECT * FROM relay_reconcile_candidates($1, $2, $3, $4)", [opts.limit, opts.graceSeconds, opts.staleSeconds, opts.retryBudget]);
+  return rows.map((r) => ({ id: r.id, tenantId: r.tenant_id }));
+}
+
+export interface SyncHealthCounts {
+  outboxBacklog: number;
+  outboxOldestSeconds: number;
+  outboxFailed: number;
+  syncPending: number;
+  syncFailed: number;
+  syncCreated: number;
+  syncClosed: number;
+  syncFailedBeyondBudget: number;
+}
+
+/** GitHub sync backlog and failure counts across all tenants (worker only). Counts, never row contents. */
+export async function getSyncHealthCounts(pool: Pool, retryBudget: number): Promise<SyncHealthCounts> {
+  const { rows } = await pool.query("SELECT * FROM relay_sync_health_all($1)", [retryBudget]);
+  const r = rows[0];
+  return {
+    outboxBacklog: r.outbox_backlog, outboxOldestSeconds: r.outbox_oldest_seconds, outboxFailed: r.outbox_failed,
+    syncPending: r.sync_pending, syncFailed: r.sync_failed, syncCreated: r.sync_created, syncClosed: r.sync_closed,
+    syncFailedBeyondBudget: r.sync_failed_beyond_budget,
+  };
+}
+
+export interface LoginCandidate { id: string; tenantId: string; passwordHash: string; role: string; active: boolean; name: string }
+
+/** Pre-tenant lookup for login: the user with this email (case-insensitive), or null. Returns the password hash. */
+export async function findAdminForLogin(pool: Pool, email: string): Promise<LoginCandidate | null> {
+  const { rows } = await pool.query<{ id: string; tenant_id: string; password_hash: string; role: string; active: boolean; name: string }>(
+    "SELECT * FROM relay_find_admin_for_login($1)", [email]);
+  const r = rows[0];
+  return r ? { id: r.id, tenantId: r.tenant_id, passwordHash: r.password_hash, role: r.role, active: r.active, name: r.name } : null;
+}
+
+export interface ResolvedSession { sessionId: string; tenantId: string; userId: string; email: string; name: string; role: string }
+
+/** Pre-tenant lookup for every authenticated request: the live session for this token hash, or null. */
+export async function resolveSession(pool: Pool, tokenHash: string, idleSeconds: number): Promise<ResolvedSession | null> {
+  const { rows } = await pool.query<{ session_id: string; tenant_id: string; user_id: string; email: string; name: string; role: string }>(
+    "SELECT * FROM relay_resolve_session($1, $2)", [tokenHash, idleSeconds]);
+  const r = rows[0];
+  return r ? { sessionId: r.session_id, tenantId: r.tenant_id, userId: r.user_id, email: r.email, name: r.name, role: r.role } : null;
+}

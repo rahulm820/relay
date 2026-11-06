@@ -24,6 +24,8 @@ const EnvSchema = z.object({
   WORKER_PORT: port.default(8081),
 
   TELEGRAM_WEBHOOK_PUBLIC_URL: optionalUrl,
+  /** Bot API base URL. Only change it to point at a local mock; the default is the real Telegram. */
+  TELEGRAM_API_BASE_URL: optionalUrl,
 
   /** Base64 of 32 random bytes (`openssl rand -base64 32`). Encrypts raw message text at rest. */
   MESSAGE_ENCRYPTION_KEY: z.preprocess(
@@ -31,13 +33,14 @@ const EnvSchema = z.object({
     z.string().refine((v) => Buffer.from(v, "base64").length === 32, { message: "must be 32 bytes, base64" }).optional(),
   ).transform((v) => (v === undefined ? undefined : new Secret(v))),
 
-  /**
-   * LOCAL DEVELOPMENT ONLY. Lets the API treat every caller as one fixed tenant, because real
-   * authentication (Issue #17) does not exist yet. Off by default, refused in production, and the API
-   * additionally refuses to start with it unless it listens on a loopback address.
-   */
-  DEV_AUTH_ENABLED: z.preprocess(empty, z.enum(["true", "false"]).default("false")).transform((v) => v === "true"),
-  DEV_AUTH_TENANT_ID: z.preprocess(empty, z.uuid().optional()),
+  /** Browser origins allowed to call the admin API with credentials (comma separated). No wildcard. */
+  ADMIN_ALLOWED_ORIGINS: z.preprocess(empty, z.string().default("http://localhost:3000")).transform((v) => v.split(",").map((o) => o.trim()).filter(Boolean)),
+  /** Absolute lifetime of an admin session, in hours. */
+  ADMIN_SESSION_TTL_HOURS: z.preprocess(empty, z.coerce.number().int().min(1).max(168).default(12)),
+  /** A session unused for this many minutes expires. */
+  ADMIN_SESSION_IDLE_MINUTES: z.preprocess(empty, z.coerce.number().int().min(1).max(1440).default(60)),
+  /** Send the session cookie only over HTTPS. Defaults to on in production. */
+  ADMIN_COOKIE_SECURE: z.preprocess(empty, z.enum(["true", "false"]).optional()).transform((v) => (v === undefined ? undefined : v === "true")),
 
   GITHUB_TOKEN: secret,
 
@@ -46,6 +49,13 @@ const EnvSchema = z.object({
   SWITCH_ADMIN_PASSWORD: secret,
   AGENT_REGISTRATION_TOKEN: secret,
   SWITCH_BRIDGE_ID: optionalString,
+  /** Switch's agent API (where agents post). Defaults to SWITCH_GATEWAY_URL without its trailing /gateway. */
+  SWITCH_API_URL: optionalUrl,
+  /** Names of the two agents every ticket room contains. Created by `npm run switch:bootstrap`. */
+  SWITCH_TRIAGER_AGENT: z.preprocess(empty, z.string().regex(/^[a-z0-9][a-z0-9._-]*$/).default("relay-triager")),
+  SWITCH_NOTIFIER_AGENT: z.preprocess(empty, z.string().regex(/^[a-z0-9][a-z0-9._-]*$/).default("relay-notifier")),
+  /** API key of the notifier agent (printed to .env.switch by the bootstrap, never shown). Posts room messages. */
+  SWITCH_NOTIFIER_API_KEY: secret,
 
   LLM_PROVIDER: z.enum(LLM_PROVIDERS).default("gemini"),
   LLM_API_KEY: secret,
@@ -61,9 +71,9 @@ export interface Config {
   redisUrl: string;
   api: { host: string; port: number };
   worker: { port: number };
-  telegram: { webhookPublicUrl?: string };
+  telegram: { webhookPublicUrl?: string; apiBaseUrl?: string };
   security: { messageEncryptionKey?: Secret };
-  devAuth: { enabled: boolean; tenantId?: string };
+  admin: { allowedOrigins: string[]; sessionTtlHours: number; sessionIdleMinutes: number; cookieSecure: boolean };
   github: { token?: Secret };
   switch: {
     gatewayUrl: string;
@@ -71,6 +81,10 @@ export interface Config {
     adminPassword?: Secret;
     agentRegistrationToken?: Secret;
     bridgeId?: string;
+    apiUrl?: string;
+    triagerAgent: string;
+    notifierAgent: string;
+    notifierApiKey?: Secret;
   };
   llm: {
     provider: (typeof LLM_PROVIDERS)[number];
@@ -101,8 +115,9 @@ export function loadConfig(env: Readonly<Record<string, string | undefined>> = p
     throw new ConfigError([...problems.values()]);
   }
   const e = parsed.data;
-  if (e.DEV_AUTH_ENABLED && !e.DEV_AUTH_TENANT_ID) throw new ConfigError(["DEV_AUTH_TENANT_ID is required when DEV_AUTH_ENABLED=true"]);
-  if (e.DEV_AUTH_ENABLED && e.NODE_ENV === "production") throw new ConfigError(["DEV_AUTH_ENABLED is not allowed when NODE_ENV=production"]);
+  for (const origin of e.ADMIN_ALLOWED_ORIGINS) {
+    if (origin === "*" || !URL.canParse(origin)) throw new ConfigError(["ADMIN_ALLOWED_ORIGINS must list explicit origins like http://localhost:3000"]);
+  }
   return {
     nodeEnv: e.NODE_ENV,
     logLevel: e.LOG_LEVEL,
@@ -110,9 +125,14 @@ export function loadConfig(env: Readonly<Record<string, string | undefined>> = p
     redisUrl: e.REDIS_URL,
     api: { host: e.API_HOST, port: e.API_PORT },
     worker: { port: e.WORKER_PORT },
-    telegram: { webhookPublicUrl: e.TELEGRAM_WEBHOOK_PUBLIC_URL },
+    telegram: { webhookPublicUrl: e.TELEGRAM_WEBHOOK_PUBLIC_URL, apiBaseUrl: e.TELEGRAM_API_BASE_URL },
     security: { messageEncryptionKey: e.MESSAGE_ENCRYPTION_KEY },
-    devAuth: { enabled: e.DEV_AUTH_ENABLED, tenantId: e.DEV_AUTH_TENANT_ID },
+    admin: {
+      allowedOrigins: e.ADMIN_ALLOWED_ORIGINS.map((o) => new URL(o).origin),
+      sessionTtlHours: e.ADMIN_SESSION_TTL_HOURS,
+      sessionIdleMinutes: e.ADMIN_SESSION_IDLE_MINUTES,
+      cookieSecure: e.ADMIN_COOKIE_SECURE ?? e.NODE_ENV === "production",
+    },
     github: { token: e.GITHUB_TOKEN },
     switch: {
       gatewayUrl: e.SWITCH_GATEWAY_URL,
@@ -120,6 +140,10 @@ export function loadConfig(env: Readonly<Record<string, string | undefined>> = p
       adminPassword: e.SWITCH_ADMIN_PASSWORD,
       agentRegistrationToken: e.AGENT_REGISTRATION_TOKEN,
       bridgeId: e.SWITCH_BRIDGE_ID,
+      apiUrl: e.SWITCH_API_URL,
+      triagerAgent: e.SWITCH_TRIAGER_AGENT,
+      notifierAgent: e.SWITCH_NOTIFIER_AGENT,
+      notifierApiKey: e.SWITCH_NOTIFIER_API_KEY,
     },
     llm: {
       provider: e.LLM_PROVIDER,

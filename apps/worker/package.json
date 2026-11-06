@@ -14,8 +14,10 @@
   "dependencies": {
     "@relay/core": "0.1.0",
     "@relay/db": "0.1.0",
+    "@relay/channels": "0.1.0",
     "@relay/llm": "0.1.0",
-    "@relay/shared": "0.1.0"
+    "@relay/shared": "0.1.0",
+    "@relay/switch": "0.1.0"
   },
   "devDependencies": {
     "tsx": "^4.0.0"

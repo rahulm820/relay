@@ -27,6 +27,7 @@ function fakeTracker(fail?: TrackerError) {
     addComment: async () => { throw new Error("unused"); },
     linkIssues: async () => { throw new Error("unused"); },
     getStatus: async () => { throw new Error("unused"); },
+    findIssueByTicket: async () => { throw new Error("unused"); },
     onWebhook: () => { throw new Error("unused"); },
   };
   return { provider, calls };
@@ -85,6 +86,7 @@ describe("github-sync stage", () => {
     const { messageId, ticketIds } = await createTickets(t, extraction());
     const tracker = fakeTracker();
 
+    // The stage reads the issue's steps from the extract stage's result, so that result must be in the context.
     const out = await syncWith(tracker.provider)(stageCtx(t, messageId, { ticket: { ticketIds }, extract: extraction() }, "github-sync"));
 
     assert.equal(tracker.calls.length, 1);
@@ -121,6 +123,21 @@ describe("github-sync stage", () => {
     const outcomes = (second.result as { tickets: { status: string; reason?: string }[] }).tickets;
     assert.equal(outcomes[0]?.status, "skipped");
     assert.equal(outcomes[0]?.reason, "already_created");
+  });
+
+  it("a replay never opens a second issue for a row whose issue was closed on GitHub", async () => {
+    const t = await createTenant(db.owner);
+    await integration(t);
+    const { messageId, ticketIds } = await createTickets(t, extraction());
+    const tracker = fakeTracker();
+    const run = () => syncWith(tracker.provider)(stageCtx(t, messageId, { ticket: { ticketIds } }, "github-sync"));
+    await run();
+    await db.owner.query("UPDATE tracker_issues SET sync_status = 'closed' WHERE ticket_id = $1", [ticketIds[0]]);
+
+    const again = await run();
+
+    assert.equal(tracker.calls.length, 1);
+    assert.equal((again.result as { tickets: { reason?: string }[] }).tickets[0]?.reason, "already_created");
   });
 
   it("a GitHub 403 marks the row failed with a code, leaves the ticket intact and does not throw", async () => {
