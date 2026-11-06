@@ -151,6 +151,10 @@ export interface NewTicket {
   quarantineReason?: string;
   /** Whether GitHub and Switch should be told about this ticket now. */
   outbox: boolean;
+  /** Extraction's product area; a rule signal for duplicate detection (#11). */
+  productArea?: string | null;
+  /** Embedding of title and summary, stored for duplicate detection (#11). */
+  embedding?: number[] | null;
 }
 
 export interface CreatedTicket {
@@ -184,15 +188,16 @@ export async function createTicketsForMessage(
     const inserted = await c.query<{ id: string }>(
       `INSERT INTO tickets (tenant_id, client_id, conversation_id, title, summary, category, priority, priority_reason,
                             priority_source, role_needed, assignee_id, source_message_id, source_issue_index,
-                            sla_ack_due, sla_resolve_due)
+                            sla_ack_due, sla_resolve_due, product_area)
        VALUES (relay_current_tenant(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
                now() + (SELECT make_interval(mins => ack_minutes) FROM sla_policies WHERE priority = $6),
-               now() + (SELECT make_interval(mins => resolve_minutes) FROM sla_policies WHERE priority = $6))
+               now() + (SELECT make_interval(mins => resolve_minutes) FROM sla_policies WHERE priority = $6), $13)
        ON CONFLICT (source_message_id, source_issue_index) WHERE source_message_id IS NOT NULL DO NOTHING
        RETURNING id`,
       [
         source.client_id, source.conversation_id, t.title.slice(0, MAX_TITLE), t.summary.slice(0, MAX_SUMMARY), t.category,
         t.priority, t.priorityReason, t.prioritySource, t.roleNeeded ?? null, t.assigneeId ?? null, input.messageId, t.issueIndex,
+        t.productArea ?? null,
       ],
     );
     if (!inserted.rows[0]) {
@@ -202,6 +207,7 @@ export async function createTicketsForMessage(
       continue;
     }
     const ticketId = inserted.rows[0].id;
+    if (t.embedding) await c.query("UPDATE tickets SET embedding = $2::vector WHERE id = $1", [ticketId, `[${t.embedding.join(",")}]`]);
     await addEvent(c, ticketId, "created", input.actor, {
       messageId: input.messageId, issueIndex: t.issueIndex, category: t.category, priority: t.priority, prioritySource: t.prioritySource,
     });

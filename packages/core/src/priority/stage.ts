@@ -7,6 +7,7 @@
 import { ExtractionOutcomeSchema, isFallback, type ClientTier, type Priority, type Role } from "@relay/shared";
 import type { Client } from "@relay/db";
 import { PermanentFailureError } from "../queue/index.js";
+import { DedupeStageResultSchema } from "../dedupe/result.js";
 import type { StageHandler } from "../orchestrator/index.js";
 import { routeIssue, scorePriority, selectAssignee, type Member, type OnCallEntry, type RoutingRule } from "./engine.js";
 
@@ -68,14 +69,16 @@ export function priorityStage(opts: PriorityStageOptions = {}): StageHandler {
 
     const at = now();
     const world = await ctx.db((c) => loadWorld(c, ctx.messageId, at));
+    // A duplicate's count includes the matched ticket (#11), so the decision is the one the ticket will carry.
+    const dedupe = DedupeStageResultSchema.safeParse(ctx.results["dedupe"]);
+    const countByIssue = new Map((dedupe.success ? dedupe.data.matches : []).map((m) => [m.issueIndex, m.affectedClientCount]));
 
-    const decisions = outcome.issues.map((issue) => {
-      // Affected count stays at 1 until dedupe (#11) supplies it.
+    const decisions = outcome.issues.map((issue, index) => {
       const scored = scorePriority({
         category: issue.category,
         signals: issue.severity_signals,
         tier: world.tier,
-        affectedClientCount: 1,
+        affectedClientCount: countByIssue.get(index) ?? 1,
         sentiment: outcome.sentiment,
       });
       const routed = routeIssue({ category: issue.category, signals: issue.severity_signals, tier: world.tier, priority: scored.priority }, world.rules);

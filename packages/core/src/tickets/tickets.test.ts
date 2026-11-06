@@ -166,7 +166,7 @@ describe("ticket stage", () => {
     for (const [over, name] of [[{ off_topic: true }, "off_topic"], [{ is_complaint: false }, "not_a_complaint"]] as const) {
       const { t, messageId } = await setup();
       const out = await runStage(t, messageId, { extract: extraction(over) });
-      assert.deepEqual(out.result, { outcome: name, ticketIds: [] });
+      assert.deepEqual(out.result, { outcome: name, ticketIds: [], duplicates: [] });
       assert.equal((await ticketsOf(messageId)).length, 0);
     }
   });
@@ -391,7 +391,7 @@ describe("end to end through the real orchestrator", () => {
       assert.equal(ticket.title.includes(MARKER), true);
       assert.equal((await outboxOf(ticket.id)).length, 2);
       const run = (await rows("SELECT stage_results FROM pipeline_runs WHERE message_id = $1", [messageId]))[0];
-      assert.deepEqual(run.stage_results.ticket, { outcome: "tickets", ticketIds: [ticket.id] });
+      assert.deepEqual(run.stage_results.ticket, { outcome: "tickets", ticketIds: [ticket.id], duplicates: [] });
       assert.ok(!JSON.stringify(logs).includes(MARKER));
       assert.equal(await redis.xlen("q.dlq"), 0);
     } finally {
