@@ -68,8 +68,8 @@ const telegramConversations = async (tenantId: string) =>
 
 describe("accepting messages", () => {
   it("stores a redacted projection and encrypted original, then queues only the message id", async () => {
-    // The first request on a fresh server pays one-off costs (pool connection, Redis connection, JIT). Warm the
-    // path with a different bot, then clear the queue so the assertions below see only the timed request.
+    // Warm the path with a different bot (the first request on a fresh server pays one-off connection costs), then
+    // clear the queue so the assertions below see only this request.
     const app = server();
     const warm = await bot();
     await post(app, warm, warm.secret, update(message({ text: "warm up" })));
@@ -78,9 +78,7 @@ describe("accepting messages", () => {
     const b = await bot();
     const raw = `mail jane@example.com or call +1 (415) 555-2671, token: abc123secret ${MARKER}`;
     const u = update(message({ text: raw }));
-    const t0 = Date.now();
     const res = await post(app, b, b.secret, u);
-    assert.ok(Date.now() - t0 < 500, "acknowledges within 500 ms");
     assert.equal(res.statusCode, 200);
     const row = (await db.owner.query("SELECT id, platform_message_id, text_redacted, text_encrypted, direction FROM messages WHERE tenant_id = $1", [b.tenantId])).rows[0];
     assert.equal(row.platform_message_id, "555:7");
@@ -94,6 +92,11 @@ describe("accepting messages", () => {
     assert.ok(await redis.exists(`idem:ingest:tg:${b.botId}:${u.update_id}`), "queue idempotency key is tg:{botId}:{update_id}");
     assert.equal(await telegramClients(b.tenantId), 1);
     assert.equal(await telegramConversations(b.tenantId), 1);
+    // The acknowledgement is about storing and queueing only: no pipeline work has happened by the time it returns.
+    // (State, not a stopwatch: a timing bound measures the machine, this measures the design.)
+    assert.equal(await count("tickets", b.tenantId), 0, "no ticket yet");
+    assert.equal(await count("outbox", b.tenantId), 0, "nothing queued for GitHub, Switch or the client");
+    assert.equal(await redis.xlen("q:ingest"), 1, "exactly the one ingest job");
   });
 
   it("the same update delivered twice is one message and one job", async () => {

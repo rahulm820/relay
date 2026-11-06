@@ -20,6 +20,8 @@ export interface TestDb {
   worker: Pool;
   /** The runtime login (relay_api): what the API uses. */
   api: Pool;
+  /** Connection URLs of the same two logins, for tests that start the real API or worker as a process. */
+  urls: { api: string; worker: string };
   dispose(): Promise<void>;
 }
 
@@ -37,6 +39,10 @@ export async function createTestDb(): Promise<TestDb> {
     owner,
     worker,
     api,
+    urls: {
+      api: withDb(TEST_ADMIN_URL, name, "relay_api", "test-api-pw"),
+      worker: withDb(TEST_ADMIN_URL, name, "relay_worker", "test-worker-pw"),
+    },
     async dispose() {
       await api.end();
       await worker.end();

@@ -1,0 +1,317 @@
+{
+ "description": "Labelled customer messages for the extraction smoke check (architecture 7.4). Synthetic: no real customer data.",
+ "cases": [
+  {
+   "id": "bug-checkout-500",
+   "text": "My checkout fails with an error 500 when I tap Pay now on the cart page.",
+   "expected": {
+    "isComplaint": true,
+    "offTopic": false,
+    "category": "bug"
+   }
+  },
+  {
+   "id": "bug-login-loop",
+   "text": "I keep getting sent back to the login page after I enter my password. It started this morning.",
+   "expected": {
+    "isComplaint": true,
+    "offTopic": false,
+    "category": "bug"
+   }
+  },
+  {
+   "id": "bug-upload-crash",
+   "text": "The app crashes every time I try to upload a photo bigger than about 10 MB.",
+   "expected": {
+    "isComplaint": true,
+    "offTopic": false,
+    "category": "bug"
+   }
+  },
+  {
+   "id": "bug-search-empty",
+   "text": "Search returns nothing even for products I can see on the home page.",
+   "expected": {
+    "isComplaint": true,
+    "offTopic": false,
+    "category": "bug"
+   }
+  },
+  {
+   "id": "bug-email-late",
+   "text": "Password reset emails take over twenty minutes to arrive, so the link has expired.",
+   "expected": {
+    "isComplaint": true,
+    "offTopic": false,
+    "category": "bug"
+   }
+  },
+  {
+   "id": "bug-outage",
+   "text": "The whole site is down for me and my team, we only see a blank white page.",
+   "expected": {
+    "isComplaint": true,
+    "offTopic": false,
+    "category": "bug"
+   }
+  },
+  {
+   "id": "bug-data-missing",
+   "text": "All the orders I placed last week have disappeared from my account history.",
+   "expected": {
+    "isComplaint": true,
+    "offTopic": false,
+    "category": "bug"
+   }
+  },
+  {
+   "id": "ui-dark-mode",
+   "text": "In dark mode the text on the invoice page is grey on dark grey and I cannot read it.",
+   "expected": {
+    "isComplaint": true,
+    "offTopic": false,
+    "category": "ui"
+   }
+  },
+  {
+   "id": "ui-overlap",
+   "text": "On my phone the menu icon sits on top of the logo and covers it.",
+   "expected": {
+    "isComplaint": true,
+    "offTopic": false,
+    "category": "ui"
+   }
+  },
+  {
+   "id": "ui-typo",
+   "text": "There is a spelling mistake on the pricing page, the third plan says Enterprize.",
+   "expected": {
+    "isComplaint": true,
+    "offTopic": false,
+    "category": "ui"
+   }
+  },
+  {
+   "id": "ui-misaligned",
+   "text": "The buttons on the settings screen are not lined up and one is cut off at the edge.",
+   "expected": {
+    "isComplaint": true,
+    "offTopic": false,
+    "category": "ui"
+   }
+  },
+  {
+   "id": "billing-double",
+   "text": "I was charged twice for my subscription this month and I would like one of the payments refunded.",
+   "expected": {
+    "isComplaint": true,
+    "offTopic": false,
+    "category": "billing"
+   }
+  },
+  {
+   "id": "billing-wrong-plan",
+   "text": "My invoice shows the enterprise plan but we only ever signed up for the basic one.",
+   "expected": {
+    "isComplaint": true,
+    "offTopic": false,
+    "category": "billing"
+   }
+  },
+  {
+   "id": "billing-no-receipt",
+   "text": "I paid yesterday but I never received a receipt or an invoice by email.",
+   "expected": {
+    "isComplaint": true,
+    "offTopic": false,
+    "category": "billing"
+   }
+  },
+  {
+   "id": "question-export",
+   "text": "Where can I find the option to export all my past orders as a spreadsheet?",
+   "expected": {
+    "isComplaint": true,
+    "offTopic": false,
+    "category": "question"
+   }
+  },
+  {
+   "id": "question-team",
+   "text": "How do I add a colleague to our account so they can see the reports?",
+   "expected": {
+    "isComplaint": true,
+    "offTopic": false,
+    "category": "question"
+   }
+  },
+  {
+   "id": "question-limits",
+   "text": "Is there a limit on how many projects I can create on my plan?",
+   "expected": {
+    "isComplaint": true,
+    "offTopic": false,
+    "category": "question"
+   }
+  },
+  {
+   "id": "feature-sso",
+   "text": "It would be great if you supported single sign-on with our company identity provider.",
+   "expected": {
+    "isComplaint": true,
+    "offTopic": false,
+    "category": "feature"
+   }
+  },
+  {
+   "id": "feature-dark",
+   "text": "Please add a scheduled export that sends the weekly report to my inbox automatically.",
+   "expected": {
+    "isComplaint": true,
+    "offTopic": false,
+    "category": "feature"
+   }
+  },
+  {
+   "id": "feature-api",
+   "text": "We need an API endpoint to fetch invoices, doing it by hand does not scale for us.",
+   "expected": {
+    "isComplaint": true,
+    "offTopic": false,
+    "category": "feature"
+   }
+  },
+  {
+   "id": "other-vague",
+   "text": "Something feels off with the app lately but I cannot say exactly what.",
+   "expected": {
+    "isComplaint": true,
+    "offTopic": false,
+    "category": "other"
+   }
+  },
+  {
+   "id": "offtopic-weather",
+   "text": "What is the weather going to be like in Paris this weekend?",
+   "expected": {
+    "isComplaint": false,
+    "offTopic": true,
+    "category": null
+   }
+  },
+  {
+   "id": "offtopic-joke",
+   "text": "Can you tell me a joke about programmers?",
+   "expected": {
+    "isComplaint": false,
+    "offTopic": true,
+    "category": null
+   }
+  },
+  {
+   "id": "offtopic-recipe",
+   "text": "Do you have a good recipe for chocolate chip cookies?",
+   "expected": {
+    "isComplaint": false,
+    "offTopic": true,
+    "category": null
+   }
+  },
+  {
+   "id": "smalltalk-thanks",
+   "text": "Thanks a lot, that fixed it, have a great day!",
+   "expected": {
+    "isComplaint": false,
+    "offTopic": false,
+    "category": null
+   }
+  },
+  {
+   "id": "smalltalk-hello",
+   "text": "Hello there, good morning!",
+   "expected": {
+    "isComplaint": false,
+    "offTopic": false,
+    "category": null
+   }
+  },
+  {
+   "id": "bug-checkout-500-again",
+   "text": "Paying does not work, I press Pay now at checkout and I just get a server error 500.",
+   "expected": {
+    "isComplaint": true,
+    "offTopic": false,
+    "category": "bug"
+   }
+  },
+  {
+   "id": "billing-double-again",
+   "text": "My card was billed two times for the same month of my subscription, please refund the extra charge.",
+   "expected": {
+    "isComplaint": true,
+    "offTopic": false,
+    "category": "billing"
+   }
+  },
+  {
+   "id": "ui-dark-mode-again",
+   "text": "The invoice page is unreadable in dark mode, the grey text blends into the background.",
+   "expected": {
+    "isComplaint": true,
+    "offTopic": false,
+    "category": "ui"
+   }
+  },
+  {
+   "id": "bug-login-loop-again",
+   "text": "I enter the right password and the app just takes me back to the sign in page again and again.",
+   "expected": {
+    "isComplaint": true,
+    "offTopic": false,
+    "category": "bug"
+   }
+  }
+ ],
+ "duplicatePairs": [
+  {
+   "a": "bug-checkout-500",
+   "b": "bug-checkout-500-again",
+   "duplicate": true
+  },
+  {
+   "a": "billing-double",
+   "b": "billing-double-again",
+   "duplicate": true
+  },
+  {
+   "a": "ui-dark-mode",
+   "b": "ui-dark-mode-again",
+   "duplicate": true
+  },
+  {
+   "a": "bug-login-loop",
+   "b": "bug-login-loop-again",
+   "duplicate": true
+  },
+  {
+   "a": "bug-checkout-500",
+   "b": "billing-double",
+   "duplicate": false
+  },
+  {
+   "a": "ui-overlap",
+   "b": "ui-misaligned",
+   "duplicate": false
+  },
+  {
+   "a": "bug-search-empty",
+   "b": "bug-email-late",
+   "duplicate": false
+  },
+  {
+   "a": "feature-sso",
+   "b": "feature-api",
+   "duplicate": false
+  }
+ ]
+}
