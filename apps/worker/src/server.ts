@@ -5,12 +5,12 @@ import { createServer } from "node:http";
 import { createClientSendHandler, createPgClientSendStore } from "@relay/channels";
 import {
   Orchestrator, OutboxDispatcher, PeriodicJob, Redis, SyncMetrics, createDefaultOutboxRegistry, createDefaultStageRegistry, dedupeStage, priorityStage,
-  createGithubCreateIssueHandler, createGithubDraftHandler, createPgReconcileStore, getSyncHealth, githubSyncStage, notifyStage, reconcileOnce,
+  createGithubCreateIssueHandler, createGithubUpdateIssueHandler, createGithubDraftHandler, createPgReconcileStore, getSyncHealth, githubSyncStage, notifyStage, reconcileOnce,
   reconcileSettingsFromEnv, ticketStage, DRAFT_PROMPT_VERSION,
 } from "@relay/core";
 import { createPool, withTenant } from "@relay/db";
 import { createEmbedder, createExtractor, createLlmProvider } from "@relay/llm";
-import { createSwitchRoomHandler, switchFromConfig } from "@relay/switch";
+import { createSwitchRoomHandler, createSwitchMessageHandler, switchFromConfig } from "@relay/switch";
 import { ConfigError, EnvSecretProvider, PIPELINE_VERSION, PROMPT_VERSION, loadConfig } from "@relay/shared";
 
 let config;
@@ -96,6 +96,11 @@ outboxHandlers.register("github.draft", createGithubDraftHandler({
   ...(llmReady && strongModel
     ? { llm: { provider: createLlmProvider(config.llm), model: strongModel, promptVersion: DRAFT_PROMPT_VERSION, recordRun: recordDraftRun } }
     : {}),
+}));
+outboxHandlers.register("github.update_issue", createGithubUpdateIssueHandler({ pool, secrets }));
+outboxHandlers.register("switch.post_message", createSwitchMessageHandler({
+  pool, client: switchClient, missing: switchMissing,
+  ...(config.switch.bridgeId ? { log: (e) => console.log(JSON.stringify(e)) } : {}),
 }));
 outboxHandlers.register("switch.create_room", createSwitchRoomHandler({
   pool, client: switchClient, missing: switchMissing,

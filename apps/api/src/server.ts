@@ -92,6 +92,7 @@ export function buildServer(deps: ServerDeps) {
   });
   registerTicketRoutes(app, { pool: deps.pool, authenticate });
   registerAdminRoutes(app, { pool: deps.pool, authenticate });
+  registerIssueDraftRoutes(app, { pool: deps.pool, authenticate: deps.authenticate ?? sessionAuthenticator(store, admin.sessionIdleMinutes * 60) });
   return app;
 }
 

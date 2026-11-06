@@ -179,7 +179,8 @@ describe("browser protections on the auth routes", () => {
 
 describe("protected routes", () => {
   it("the ticket and configuration routes answer 401 without a session", async () => {
-    for (const [method, url] of [["GET", "/api/tickets"], ["GET", "/api/members"], ["GET", "/api/bots"], ["GET", "/api/integrations"], ["GET", "/api/routing-rules"], ["GET", "/api/sla-policies"], ["GET", "/api/chat-connections"]] as const) {
+    const id = randomUUID();
+    for (const [method, url] of [["GET", "/api/tickets"], ["GET", "/api/members"], ["GET", "/api/bots"], ["GET", "/api/integrations"], ["GET", "/api/routing-rules"], ["GET", "/api/sla-policies"], ["GET", "/api/chat-connections"], ["GET", `/api/issue-drafts`], ["POST", `/api/issue-drafts/${id}/approve`], ["POST", `/api/issue-drafts/${id}/reject`]] as const) {
       const res = await app.inject({ method, url });
       assert.equal(res.statusCode, 401, url);
       assert.deepEqual(res.json(), { error: "unauthorized" });
