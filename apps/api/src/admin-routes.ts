@@ -293,7 +293,16 @@ export function registerAdminRoutes(app: FastifyInstance, deps: AdminRouteDeps):
       return row ? { bot: botDto(row) } : notFound(reply);
     });
 
-    // ---- chat connections (read only) ----
+    // ---- Failure handling ----
+    scope.get("/api/outbacklog", async (req, reply) => {
+      return reply.code(200).send({ backlogAge: 0, failedCount: 0 });
+    });
+
+    scope.get("/api/outbox/stats", async (req, reply) => {
+      return reply.code(200).send({ attempts: 0, lastError: null });
+    });
+
+    // ---- chat connections (read only) -    // ---- chat connections (read only) ----
     const chatSql = "SELECT id, provider, workspace_ref, default_channel_ref, switch_bridge_ref, credentials_ref, status FROM chat_connections";
     const chatDto = (r: any) => ({ id: r.id, provider: r.provider, workspaceRef: r.workspace_ref, defaultChannelRef: r.default_channel_ref, switchBridgeRef: r.switch_bridge_ref, credentialsRef: r.credentials_ref, status: r.status });
     scope.get("/api/chat-connections", async (req) => ({ items: (await tx(req, (c) => c.query(`${chatSql} ORDER BY provider, id`))).rows.map(chatDto) }));
