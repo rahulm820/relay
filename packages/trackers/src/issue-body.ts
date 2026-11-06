@@ -42,6 +42,11 @@ export function labelsFor(issue: Pick<IssueSource, "category" | "priority">, map
 const list = (items: string[] | undefined): string =>
   items && items.length > 0 ? items.map((s) => `- ${s}`).join("\n") : "";
 
+/** The ticket-id marker every issue body ends with; findIssueByTicket recovers the link from it. */
+export function ticketFooter(ticketId: string): string {
+  return `---\n_Created from Relay ticket \`${ticketId}\`._`;
+}
+
 export function buildIssueBody(src: IssueSource): string {
   const sections: string[] = [];
   sections.push(src.summary.trim() || "_No summary was extracted. See the Relay ticket._");
@@ -60,6 +65,6 @@ export function buildIssueBody(src: IssueSource): string {
   const missing = list(src.missingInfo);
   if (missing) sections.push(`### Missing information\n${missing}`);
 
-  sections.push(`---\n_Created from Relay ticket \`${src.ticketId}\`._`);
+  sections.push(ticketFooter(src.ticketId));
   return sections.join("\n\n");
 }

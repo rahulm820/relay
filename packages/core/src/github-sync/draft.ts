@@ -11,13 +11,14 @@
 // Traceability (§7.4): one `llm_runs` row per provider request with the draft prompt version and the
 // sha256 of that version plus the exact user prompt.
 import { createHash } from "node:crypto";
-import { GitHubProvider, type RepoContext, type RepoContextProvider } from "@relay/trackers";
+import { GitHubProvider, ticketFooter, type RepoContext, type RepoContextProvider } from "@relay/trackers";
 import type { SecretProvider } from "@relay/shared";
 import { withTenant, type Pool } from "@relay/db";
 import { z } from "zod";
 import { PermanentFailureError } from "../queue/index.js";
 import type { OutboxHandler } from "../outbox/index.js";
 import { loadTicket, resolveToken, type ExtractedIssueDetail, type TicketForIssue } from "./issue.js";
+import { approveIssueDraft } from "./approval.js";
 
 /** Prompt version of the drafting call. Recorded on every llm_runs row it produces. */
 export const DRAFT_PROMPT_VERSION = "github_draft.v1";
@@ -46,6 +47,11 @@ export const GithubDraftSchema = z.object({
 });
 
 export type GithubDraft = z.infer<typeof GithubDraftSchema>;
+
+/** The approved draft as a GitHub issue body, keeping the ticket-id marker findIssueByTicket relies on. */
+export function draftIssueBody(draft: GithubDraft, ticketId: string): string {
+  return `${draft.description}\n\n${ticketFooter(ticketId)}`;
+}
 
 export interface DraftLlmRun {
   tenantId: string;
@@ -169,8 +175,8 @@ export function createGithubDraftHandler(opts: GithubDraftOptions): OutboxHandle
       if (ticket.status === "quarantined") return { kind: "quarantined" as const };
       // Same trigger as the enqueue gate (#13): a bug complaint on a code-aware tenant only.
       if (ticket.category !== "bug") return { kind: "skip" as const, note: "skipped_not_code_bug" };
-      const integration = (await c.query<{ repo_ref: string | null; credentials_ref: string | null; code_aware_enabled: boolean }>(
-        "SELECT repo_ref, credentials_ref, code_aware_enabled FROM integrations WHERE provider = 'github' AND status = 'active' LIMIT 1",
+      const integration = (await c.query<{ repo_ref: string | null; credentials_ref: string | null; code_aware_enabled: boolean; auto_approve_drafts: boolean; auto_approve_min_confidence: string }>(
+        "SELECT repo_ref, credentials_ref, code_aware_enabled, auto_approve_drafts, auto_approve_min_confidence FROM integrations WHERE provider = 'github' AND status = 'active' LIMIT 1",
       )).rows[0];
       if (!integration?.repo_ref || !integration.code_aware_enabled) return { kind: "skip" as const, note: "skipped_not_code_aware" };
       // Idempotency: one draft per ticket (a second delivery or a crashed retry finishes here).
@@ -181,7 +187,10 @@ export function createGithubDraftHandler(opts: GithubDraftOptions): OutboxHandle
       if (!opts.llm) return { kind: "fail" as const, code: "llm_not_configured", message: "llm not configured" };
       const token = await resolveToken(opts.secrets, integration.credentials_ref);
       if (!token) return { kind: "fail" as const, code: "missing_credentials", message: "github credentials are missing" };
-      return { kind: "ready" as const, ticket, repo: integration.repo_ref!, token };
+      return {
+        kind: "ready" as const, ticket, repo: integration.repo_ref!, token,
+        autoApprove: { enabled: integration.auto_approve_drafts, threshold: Number(integration.auto_approve_min_confidence) },
+      };
     });
 
     if (state.kind === "no_ticket") throw new PermanentFailureError("ticket not found", "ticket_not_found");
@@ -189,7 +198,7 @@ export function createGithubDraftHandler(opts: GithubDraftOptions): OutboxHandle
     if (state.kind === "skip") return { note: state.note };
     if (state.kind === "fail") throw new PermanentFailureError(state.message, state.code);
 
-    const { ticket, repo, token } = state;
+    const { ticket, repo, token, autoApprove } = state;
     const llm = opts.llm!;
     const promptVersion = llm.promptVersion ?? DRAFT_PROMPT_VERSION;
 
@@ -254,13 +263,22 @@ export function createGithubDraftHandler(opts: GithubDraftOptions): OutboxHandle
     }
     const evidenceRefs = [...draft!.suspected_files, ...(draft!.likely_duplicate ? [`issue:#${draft!.likely_duplicate.number}`] : [])];
 
-    // 4. One pending draft per ticket; approval/rejection is Issue #14's job.
-    await tx((c) => c.query(
+    // 4. One pending draft per ticket; approval/rejection is Issue #14's job. Auto-approval (off unless
+    //    the tenant enabled it, and only at/above its confidence threshold) runs the same approve path.
+    const inserted = await tx((c) => c.query<{ id: string }>(
       `INSERT INTO issue_drafts (tenant_id, ticket_id, repo_ref, provider, draft_json, evidence_refs, confidence, llm_run_id, status)
        SELECT relay_current_tenant(), $1, $2, 'github', $3, $4, $5, $6, 'pending'
-        WHERE NOT EXISTS (SELECT 1 FROM issue_drafts WHERE tenant_id = relay_current_tenant() AND ticket_id = $1)`,
+        WHERE NOT EXISTS (SELECT 1 FROM issue_drafts WHERE tenant_id = relay_current_tenant() AND ticket_id = $1)
+        RETURNING id`,
       [ticketId, repo, JSON.stringify(draft!), JSON.stringify(evidenceRefs), draft!.confidence, llmRunId ?? null],
     ));
+    const draftId = inserted.rows[0]?.id;
+    if (draftId && autoApprove.enabled && draft!.confidence >= autoApprove.threshold) {
+      await tx((c) => approveIssueDraft(c, {
+        tenantId: input.tenantId, draftId, decidedBy: "system:auto_approval",
+      }));
+      return { note: "draft_auto_approved" };
+    }
     return { note: "draft_created" };
   };
 }

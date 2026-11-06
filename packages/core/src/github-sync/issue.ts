@@ -56,7 +56,7 @@ export function composeIssue(ticket: TicketForIssue, labelMap: LabelMap, detail?
   return { title: ticket.title, body, labels: labelsFor(ticket, labelMap) };
 }
 
-export type IssueEventType = "tracker.issue_created" | "tracker.issue_repaired";
+export type IssueEventType = "tracker.issue_created" | "tracker.issue_repaired" | "tracker.issue_updated";
 
 /**
  * Records that the ticket's GitHub issue exists: marks the tracker_issues row `created` (or `closed` if the issue
