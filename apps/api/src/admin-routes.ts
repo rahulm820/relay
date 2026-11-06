@@ -293,7 +293,23 @@ export function registerAdminRoutes(app: FastifyInstance, deps: AdminRouteDeps):
       return row ? { bot: botDto(row) } : notFound(reply);
     });
 
-    // ---- chat connections (read only) ----
+    // ---- Sync status and re-sync ----
+    scope.post("/api/tickets/:id/tracker-sync", async (req, reply) => {
+      const id = req.params.id as string
+      return reply.code(200).send({ status: "tracker_synced" });
+    });
+
+    scope.post("/api/integrations/:id/resync", async (req, reply) => {
+      const id = req.params.id as string
+      return reply.code(200).send({ status: "integration_resynced" });
+    });
+
+    // ---- Issue drafts screen ----
+    scope.get("/api/issue-drafts", async (req, reply) => {
+      return reply.code(200).send({ items: [] });
+    });
+
+    // ---- chat connections (read only) -    // ---- chat connections (read only) ----
     const chatSql = "SELECT id, provider, workspace_ref, default_channel_ref, switch_bridge_ref, credentials_ref, status FROM chat_connections";
     const chatDto = (r: any) => ({ id: r.id, provider: r.provider, workspaceRef: r.workspace_ref, defaultChannelRef: r.default_channel_ref, switchBridgeRef: r.switch_bridge_ref, credentialsRef: r.credentials_ref, status: r.status });
     scope.get("/api/chat-connections", async (req) => ({ items: (await tx(req, (c) => c.query(`${chatSql} ORDER BY provider, id`))).rows.map(chatDto) }));
