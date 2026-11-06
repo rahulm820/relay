@@ -4,11 +4,12 @@
 import { createServer } from "node:http";
 import { createClientSendHandler, createPgClientSendStore } from "@relay/channels";
 import {
-  Orchestrator, OutboxDispatcher, PeriodicJob, Redis, SyncMetrics, createDefaultOutboxRegistry, createDefaultStageRegistry,
-  createPgReconcileStore, getSyncHealth, githubSyncStage, notifyStage, reconcileOnce, reconcileSettingsFromEnv, ticketStage,
+  Orchestrator, OutboxDispatcher, PeriodicJob, Redis, SyncMetrics, createDefaultOutboxRegistry, createDefaultStageRegistry, dedupeStage, priorityStage,
+  createGithubCreateIssueHandler, createGithubDraftHandler, createPgReconcileStore, getSyncHealth, githubSyncStage, notifyStage, reconcileOnce,
+  reconcileSettingsFromEnv, ticketStage, DRAFT_PROMPT_VERSION,
 } from "@relay/core";
 import { createPool, withTenant } from "@relay/db";
-import { createExtractor, createLlmProvider } from "@relay/llm";
+import { createEmbedder, createExtractor, createLlmProvider } from "@relay/llm";
 import { createSwitchRoomHandler, switchFromConfig } from "@relay/switch";
 import { ConfigError, EnvSecretProvider, PIPELINE_VERSION, PROMPT_VERSION, loadConfig } from "@relay/shared";
 
@@ -51,11 +52,21 @@ if (!extract) console.warn(JSON.stringify({ msg: "llm not configured; using plac
 
 // Stages that are not implemented yet stay no-op skeletons (see createDefaultStageRegistry).
 const stages = createDefaultStageRegistry(extract ? { extract } : {});
+// Duplicate detection (#11). Without an embedding model configured it matches nothing and every complaint is its own ticket.
+const embedder = createEmbedder(config.llm);
+if (!embedder) console.warn(JSON.stringify({ msg: "no embedding model; duplicate detection disabled", provider: config.llm.provider }));
+stages.register("dedupe", dedupeStage({
+  embed: embedder ? (text, signal) => embedder.embed(text, signal) : undefined,
+  similarity: config.dedupe.similarity,
+  windowHours: config.dedupe.windowHours,
+}));
+stages.register("priority", priorityStage());
 stages.register("ticket", ticketStage());
 stages.register("notify", notifyStage()); // queues the acknowledgement / refusal / clarification (#16)
-// GitHub issue creation (#9). Tokens are read from env:NAME refs stored on the integration.
+// GitHub issue creation (#12): the stage only reports sync state; the outbox handler below does the work.
+// Tokens are read from env:NAME refs stored on the integration.
 const secrets = new EnvSecretProvider(process.env);
-stages.register("github-sync", githubSyncStage({ secrets }));
+stages.register("github-sync", githubSyncStage());
 const orchestrator = new Orchestrator({ pool, redis, stages });
 // Switch rooms are created by the outbox (switch.create_room), not by the pipeline's `switch` stage, which stays a
 // skeleton: the outbox row is the retry mechanism and is written in the same transaction as the ticket.
@@ -63,6 +74,29 @@ const orchestrator = new Orchestrator({ pool, redis, stages });
 const { client: switchClient, missing: switchMissing } = switchFromConfig(config.switch);
 if (!switchClient) console.warn(JSON.stringify({ msg: "switch integration disabled", missing: switchMissing }));
 const outboxHandlers = createDefaultOutboxRegistry();
+// github.create_issue (#12): creates exactly one GitHub issue per ticket, with retries and a pre-create lookup.
+outboxHandlers.register("github.create_issue", createGithubCreateIssueHandler({ pool, secrets }));
+// github.draft (#13): retrieves read-only repo context and stores an issue_drafts draft (approval is #14).
+// Drafting needs the stronger model; without it the rows fail with llm_not_configured instead of vanishing.
+async function recordDraftRun(run: { tenantId: string; ticketId: string; model: string; promptVersion: string; inputHash: string; outputJson: unknown | null; confidence: number | null; latencyMs: number; costUsd: number }): Promise<string | undefined> {
+  return withTenant(pool, run.tenantId, async (c) => {
+    const { rows } = await c.query<{ id: string }>(
+      `INSERT INTO llm_runs (tenant_id, ticket_id, model, prompt_version, input_hash, output_json, confidence, latency_ms, cost)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
+      [run.tenantId, run.ticketId, run.model, run.promptVersion, run.inputHash,
+        run.outputJson === null ? null : JSON.stringify(run.outputJson),
+        run.confidence, run.latencyMs, run.costUsd],
+    );
+    return rows[0]?.id;
+  });
+}
+const strongModel = config.llm.strongModel;
+outboxHandlers.register("github.draft", createGithubDraftHandler({
+  pool, secrets,
+  ...(llmReady && strongModel
+    ? { llm: { provider: createLlmProvider(config.llm), model: strongModel, promptVersion: DRAFT_PROMPT_VERSION, recordRun: recordDraftRun } }
+    : {}),
+}));
 outboxHandlers.register("switch.create_room", createSwitchRoomHandler({
   pool, client: switchClient, missing: switchMissing,
   triagerAgent: config.switch.triagerAgent, notifierAgent: config.switch.notifierAgent,

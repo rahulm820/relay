@@ -113,14 +113,16 @@ describe("send", () => {
   });
 
   it("spaces sends to one chat but not to different chats", async () => {
-    const { a } = make({ minSendIntervalMs: 60, sleep: undefined });
-    const t0 = Date.now();
+    // Injected clock and recording sleep: the decision is checked, not real elapsed time (which varies under load).
+    const clock = 1000;
+    const { a, sleeps } = make({ minSendIntervalMs: 60, now: () => clock });
     await a.send("b", "1", "one");
+    assert.deepEqual(sleeps, [], "the first send to a chat does not wait");
     await a.send("b", "1", "two");
-    assert.ok(Date.now() - t0 >= 55, "second send to the same chat waits");
-    const t1 = Date.now();
+    assert.deepEqual(sleeps, [60], "the second send to the same chat waits the full interval");
+    sleeps.length = 0;
     await Promise.all([a.send("b", "2", "x"), a.send("b", "3", "y")]);
-    assert.ok(Date.now() - t1 < 55, "different chats do not wait for each other");
+    assert.deepEqual(sleeps, [], "different chats do not wait for each other");
   });
 
   it("keeps concurrent sends to one chat in order", async () => {

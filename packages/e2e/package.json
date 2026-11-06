@@ -6,12 +6,14 @@
   "description": "Integration and end-to-end tests: the real API and worker against real Postgres/Redis, every external system mocked",
   "scripts": {
     "typecheck": "tsc -p tsconfig.test.json",
-    "test": "tsx --test --test-concurrency=1 src/*.test.ts"
+    "test": "tsx --test --test-concurrency=1 src/*.test.ts",
+    "golden": "tsx src/golden-cli.ts"
   },
   "dependencies": {
     "@relay/channels": "0.1.0",
     "@relay/core": "0.1.0",
     "@relay/db": "0.1.0",
+    "@relay/llm": "0.1.0",
     "@relay/shared": "0.1.0",
     "@relay/switch": "0.1.0",
     "@relay/trackers": "0.1.0"

@@ -4,6 +4,7 @@ import {
   type ActorType, type Category, type Priority, type PrioritySource, type Role, type TicketStatus,
 } from "@relay/shared";
 import { enqueueOutbox } from "../outbox/index.js";
+import type { ExtractedIssueDetail } from "../github-sync/issue.js";
 import { notifyClientStatusChange } from "./client-notify.js";
 import { StatusConflictError, TicketNotFoundError, TicketValidationError } from "./errors.js";
 
@@ -85,12 +86,50 @@ async function currentTenant(c: Client): Promise<string> {
 // ---------------------------------------------------------------------------------------------------
 
 /**
- * Writes the outbox rows that make a ticket reach GitHub and Switch. Payloads carry ids only. Call it in the
- * SAME transaction as the ticket insert (or the release from quarantine). Safe to repeat: the unique
- * idempotency keys make a second call a no-op. client.send is Issue #16's job, not written here.
+ * Writes the outbox rows that make a ticket reach GitHub and Switch. Call it in the SAME transaction as the
+ * ticket insert (or the release from quarantine). Safe to repeat: the unique idempotency keys make a second
+ * call a no-op. client.send is Issue #16's job, not written here.
+ *
+ * GitHub (#12): only an active integration with a repo selected gets rows, and both of them together — the
+ * `tracker_issues` link (pending) and the `github.create_issue` outbox row, so the link can never exist
+ * without the job that fills it. `approval_policy = human` stages the outbox row (`staged`), which the
+ * dispatcher never picks up until an approval flips it to `pending`. A quarantined ticket gets no GitHub
+ * rows: nothing leaves the platform until a human releases it (transitionTicket writes them on release).
+ *
+ * Code-aware drafting (#13): a bug ticket on a tenant with `code_aware_enabled` also gets a `github.draft`
+ * row, which retrieves read-only repo context and stores an `issue_drafts` draft for approval. It is
+ * always `pending` — drafting reads the repo, it does not write it — and it is independent of the
+ * general-sync row, which approval_policy may still stage.
  */
-export async function enqueueTicketOutbox(c: Client, tenantId: string, ticketId: string, traceId: string): Promise<void> {
-  await enqueueOutbox(c, { kind: "github.create_issue", tenantId, idempotencyKey: githubIdempotencyKey(tenantId, ticketId, "general"), traceId, payload: { ticketId } });
+export async function enqueueTicketOutbox(
+  c: Client, tenantId: string, ticketId: string, traceId: string, detail?: ExtractedIssueDetail,
+): Promise<void> {
+  const ticket = (await c.query<{ status: string; category: Category }>("SELECT status, category FROM tickets WHERE id = $1", [ticketId])).rows[0];
+  if (ticket?.status !== "quarantined") {
+    const integration = (await c.query<{ repo_ref: string | null; approval_policy: "auto" | "human"; code_aware_enabled: boolean }>(
+      "SELECT repo_ref, approval_policy, code_aware_enabled FROM integrations WHERE provider = 'github' AND status = 'active' LIMIT 1",
+    )).rows[0];
+    if (integration?.repo_ref) {
+      const key = githubIdempotencyKey(tenantId, ticketId, "general");
+      await c.query(
+        `INSERT INTO tracker_issues (tenant_id, ticket_id, provider, repo_ref, sync_mode, sync_status, idempotency_key)
+         VALUES (relay_current_tenant(), $1, 'github', $2, 'general', 'pending', $3)
+         ON CONFLICT (idempotency_key) DO NOTHING`,
+        [ticketId, integration.repo_ref, key],
+      );
+      await enqueueOutbox(
+        c,
+        { kind: "github.create_issue", tenantId, idempotencyKey: key, traceId, payload: { ticketId, ...(detail ? { detail } : {}) } },
+        { status: integration.approval_policy === "human" ? "staged" : "pending" },
+      );
+      if (integration.code_aware_enabled && ticket?.category === "bug") {
+        await enqueueOutbox(c, {
+          kind: "github.draft", tenantId, idempotencyKey: `draft:${tenantId}:${ticketId}`, traceId,
+          payload: { ticketId, ...(detail ? { detail } : {}) },
+        });
+      }
+    }
+  }
   await enqueueOutbox(c, { kind: "switch.create_room", tenantId, idempotencyKey: `switch:${tenantId}:${ticketId}`, traceId, payload: { ticketId } });
 }
 
@@ -151,6 +190,12 @@ export interface NewTicket {
   quarantineReason?: string;
   /** Whether GitHub and Switch should be told about this ticket now. */
   outbox: boolean;
+  /** Extraction's product area; a rule signal for duplicate detection (#11). */
+  productArea?: string | null;
+  /** Embedding of title and summary, stored for duplicate detection (#11). */
+  embedding?: number[] | null;
+  /** Reproduction detail from the extraction, carried in the outbox payload so the GitHub issue keeps it (#12). */
+  detail?: ExtractedIssueDetail;
 }
 
 export interface CreatedTicket {
@@ -184,15 +229,16 @@ export async function createTicketsForMessage(
     const inserted = await c.query<{ id: string }>(
       `INSERT INTO tickets (tenant_id, client_id, conversation_id, title, summary, category, priority, priority_reason,
                             priority_source, role_needed, assignee_id, source_message_id, source_issue_index,
-                            sla_ack_due, sla_resolve_due)
+                            sla_ack_due, sla_resolve_due, product_area)
        VALUES (relay_current_tenant(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
                now() + (SELECT make_interval(mins => ack_minutes) FROM sla_policies WHERE priority = $6),
-               now() + (SELECT make_interval(mins => resolve_minutes) FROM sla_policies WHERE priority = $6))
+               now() + (SELECT make_interval(mins => resolve_minutes) FROM sla_policies WHERE priority = $6), $13)
        ON CONFLICT (source_message_id, source_issue_index) WHERE source_message_id IS NOT NULL DO NOTHING
        RETURNING id`,
       [
         source.client_id, source.conversation_id, t.title.slice(0, MAX_TITLE), t.summary.slice(0, MAX_SUMMARY), t.category,
         t.priority, t.priorityReason, t.prioritySource, t.roleNeeded ?? null, t.assigneeId ?? null, input.messageId, t.issueIndex,
+        t.productArea ?? null,
       ],
     );
     if (!inserted.rows[0]) {
@@ -202,13 +248,14 @@ export async function createTicketsForMessage(
       continue;
     }
     const ticketId = inserted.rows[0].id;
+    if (t.embedding) await c.query("UPDATE tickets SET embedding = $2::vector WHERE id = $1", [ticketId, `[${t.embedding.join(",")}]`]);
     await addEvent(c, ticketId, "created", input.actor, {
       messageId: input.messageId, issueIndex: t.issueIndex, category: t.category, priority: t.priority, prioritySource: t.prioritySource,
     });
     if (t.quarantineReason) {
       await transitionTicket(c, { ticketId, to: "quarantined", actor: input.actor, reason: t.quarantineReason });
     }
-    if (t.outbox) await enqueueTicketOutbox(c, input.tenantId, ticketId, input.traceId);
+    if (t.outbox) await enqueueTicketOutbox(c, input.tenantId, ticketId, input.traceId, t.detail);
     out.push({ ticketId, created: true });
   }
   return out;

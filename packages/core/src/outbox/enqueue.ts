@@ -1,5 +1,5 @@
 import type { Client } from "@relay/db";
-import { OutboxJobSchema, type OutboxJob } from "@relay/shared";
+import { OutboxJobSchema, type OutboxJob, type OutboxStatus } from "@relay/shared";
 import { PermanentFailureError } from "../queue/index.js";
 
 /**
@@ -7,14 +7,15 @@ import { PermanentFailureError } from "../queue/index.js";
  * (transactional outbox), so either both commit or neither does. The unique idempotency_key makes a
  * repeat a no-op: it returns the existing row with `inserted: false`.
  * The trace id is stored in the payload as `traceId`.
+ * `status` defaults to `pending` (dispatch now); `staged` holds the row until an approval flips it (#12).
  */
-export async function enqueueOutbox(client: Client, job: OutboxJob): Promise<{ id: string; inserted: boolean }> {
+export async function enqueueOutbox(client: Client, job: OutboxJob, opts: { status?: OutboxStatus } = {}): Promise<{ id: string; inserted: boolean }> {
   const j = OutboxJobSchema.parse(job);
   const payload = { ...j.payload, traceId: j.traceId };
   const inserted = await client.query<{ id: string }>(
-    `INSERT INTO outbox (tenant_id, kind, payload, idempotency_key) VALUES ($1, $2, $3, $4)
+    `INSERT INTO outbox (tenant_id, kind, payload, idempotency_key, status) VALUES ($1, $2, $3, $4, $5::outbox_status)
      ON CONFLICT (idempotency_key) DO NOTHING RETURNING id`,
-    [j.tenantId, j.kind, JSON.stringify(payload), j.idempotencyKey],
+    [j.tenantId, j.kind, JSON.stringify(payload), j.idempotencyKey, opts.status ?? "pending"],
   );
   if (inserted.rows[0]) return { id: inserted.rows[0].id, inserted: true };
   const existing = await client.query<{ id: string }>("SELECT id FROM outbox WHERE idempotency_key = $1", [j.idempotencyKey]);

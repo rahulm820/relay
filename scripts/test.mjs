@@ -99,7 +99,7 @@ async function main() {
 
   if (!only) {
     log("Golden-set extraction smoke check (a measurement, not a gate)");
-    await capture("npm", ["run", "golden", "-w", "@relay/llm"], env);
+    await capture("npm", ["run", "golden", "-w", "@relay/e2e"], env);
   }
 
   log("Summary");

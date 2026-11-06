@@ -102,8 +102,8 @@ export function formatReport(r: GoldenReport, header = "Golden-set extraction sm
     ...Object.entries(r.perCategory).map(([c, v]) => `    ${c.padEnd(9)} ${pct(v)}`),
     `  complaint judgement:    ${pct(r.complaintJudgement)}`,
     `  off-topic judgement:    ${pct(r.offTopicJudgement)}`,
-    `  false-duplicate rate:   ${r.falseDuplicateRate === null ? "n/a (duplicate detection, issue #11, is not implemented yet)" : pct(r.falseDuplicateRate)}`,
-    `  duplicate recall:       ${r.duplicateRecall === null ? "n/a (no detector)" : pct(r.duplicateRecall)}`,
+    `  false-duplicate rate:   ${r.falseDuplicateRate === null ? "n/a (set LLM_EMBED_MODEL to measure it)" : pct(r.falseDuplicateRate)}`,
+    `  duplicate recall:       ${r.duplicateRecall === null ? "n/a (no embedding model configured)" : pct(r.duplicateRecall)}`,
   ];
   if (r.misses.length) lines.push("  category misses:", ...r.misses.map((m) => `    ${m.id}: expected ${m.expected}, got ${m.got}`));
   return lines.join("\n");

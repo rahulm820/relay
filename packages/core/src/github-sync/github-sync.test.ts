@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
 import { withTenant } from "@relay/db";
-import { TrackerError, type ExternalIssue, type NewIssue, type TrackerProvider } from "@relay/trackers";
-import { EnvSecretProvider, type ExtractionOutcome, type ExtractionResult } from "@relay/shared";
-import { ticketStage, type StageContext } from "../index.js";
+import { TrackerError, type ExternalIssue, type FoundIssue, type NewIssue, type TrackerProvider } from "@relay/trackers";
+import { EnvSecretProvider, githubIdempotencyKey, type ExtractionOutcome, type ExtractionResult } from "@relay/shared";
+import {
+  OutboxDispatcher, approveGithubSync, createDefaultOutboxRegistry, createGithubCreateIssueHandler,
+  ticketStage, transitionTicket, type StageContext,
+} from "../index.js";
 import { githubSyncStage } from "./stage.js";
 import { createMessage, createTenant, createTestDb, type TestDb, type TestTenant } from "../testing/fixtures.js";
 
@@ -11,10 +14,13 @@ let db: TestDb;
 before(async () => { db = await createTestDb(); });
 after(async () => { await db.dispose(); });
 
-/** Records every createIssue call. `fail` makes the next calls throw the given error. */
-function fakeTracker(fail?: TrackerError) {
+/** Records every createIssue call (including failed attempts). `failWith` makes calls throw; `foundAs` answers findIssueByTicket. */
+function fakeTracker() {
   const calls: { repo: string; issue: NewIssue }[] = [];
   let nextNumber = 100;
+  let fail: TrackerError | null = null;
+  let found: FoundIssue | null = null;
+  let finds = 0;
   const provider: TrackerProvider = {
     provider: "github",
     async createIssue(repo, issue): Promise<ExternalIssue> {
@@ -23,14 +29,19 @@ function fakeTracker(fail?: TrackerError) {
       const number = nextNumber++;
       return { id: String(number * 10), number, url: `https://github.com/${repo}/issues/${number}` };
     },
+    findIssueByTicket: async () => { finds++; return found; },
     updateIssue: async () => { throw new Error("unused"); },
     addComment: async () => { throw new Error("unused"); },
     linkIssues: async () => { throw new Error("unused"); },
     getStatus: async () => { throw new Error("unused"); },
-    findIssueByTicket: async () => { throw new Error("unused"); },
-    onWebhook: () => { throw new Error("unused"); },
+    onWebhook: () => { throw new Error("unused") },
   };
-  return { provider, calls };
+  return {
+    provider, calls,
+    get finds() { return finds; },
+    failWith: (e: TrackerError | null) => { fail = e; },
+    foundAs: (f: FoundIssue | null) => { found = f; },
+  };
 }
 
 const issue = (over: Record<string, unknown> = {}) => ({
@@ -62,8 +73,7 @@ async function integration(t: TestTenant, over: { repo?: string | null; status?:
 /** Runs the real ticket stage for one extraction and returns the ticket ids it created. */
 async function createTickets(t: TestTenant, outcome: ExtractionOutcome): Promise<{ messageId: string; ticketIds: string[] }> {
   const messageId = await createMessage(db.owner, t);
-  const ctx = stageCtx(t, messageId, { extract: outcome }, "ticket");
-  const out = await ticketStage()(ctx);
+  const out = await ticketStage()(stageCtx(t, messageId, { extract: outcome }, "ticket"));
   return { messageId, ticketIds: (out.result as { ticketIds: string[] }).ticketIds };
 }
 
@@ -76,160 +86,271 @@ function stageCtx(t: TestTenant, messageId: string, results: Record<string, unkn
 }
 
 const secrets = new EnvSecretProvider({ TEST_GITHUB_TOKEN: "ghp_test_token_value_1234567890" });
-const syncWith = (tracker: TrackerProvider) => githubSyncStage({ secrets, createProvider: () => tracker });
 const rows = async (sql: string, params: unknown[]) => (await db.owner.query(sql, params)).rows;
+const outboxRow = async (key: string) => (await rows("SELECT status, last_error FROM outbox WHERE idempotency_key = $1", [key]))[0];
+const trackerRow = async (ticketId: string) =>
+  (await rows("SELECT sync_status, repo_ref, external_issue_number, external_issue_url, sync_mode, idempotency_key, last_error FROM tracker_issues WHERE ticket_id = $1", [ticketId]))[0];
 
-describe("github-sync stage", () => {
-  it("creates one issue per ticket, links it on the ticket, and writes tracker_issues and an event", async () => {
+/** A dispatcher whose github.create_issue rows go to the real handler; everything else stays a no-op. */
+function dispatcherWith(provider: TrackerProvider) {
+  return new OutboxDispatcher({
+    pool: db.worker,
+    registry: createDefaultOutboxRegistry(() => {}).register(
+      "github.create_issue",
+      createGithubCreateIssueHandler({ pool: db.worker, secrets, createProvider: () => provider }),
+    ),
+    // Retry immediately: a test's second pass must see the row the first pass put back to pending.
+    backoffBaseMs: 1, backoffMaxMs: 1,
+    log: () => {},
+  });
+}
+const handlerWith = (provider: TrackerProvider) =>
+  createGithubCreateIssueHandler({ pool: db.worker, secrets, createProvider: () => provider });
+const keyOf = (t: TestTenant, ticketId: string) => githubIdempotencyKey(t.tenantId, ticketId, "general");
+const handlerInput = (t: TestTenant, ticketId: string, payload: Record<string, unknown>) => ({
+  outboxId: "00000000-0000-4000-8000-000000000099", tenantId: t.tenantId, kind: "github.create_issue" as const,
+  idempotencyKey: keyOf(t, ticketId), payload, attempt: 1, traceId: "trace-gh",
+});
+
+describe("github.create_issue outbox handler", () => {
+  it("ticket creation writes the link and the job together; the handler then creates exactly one issue", async () => {
     const t = await createTenant(db.owner);
     await integration(t);
-    const { messageId, ticketIds } = await createTickets(t, extraction());
-    const tracker = fakeTracker();
+    const { ticketIds: [ticketId] } = await createTickets(t, extraction());
 
-    // The stage reads the issue's steps from the extract stage's result, so that result must be in the context.
-    const out = await syncWith(tracker.provider)(stageCtx(t, messageId, { ticket: { ticketIds }, extract: extraction() }, "github-sync"));
+    // Same transaction as the ticket: pending link row and pending outbox row, keyed alike.
+    const ti = await trackerRow(ticketId!);
+    assert.equal(ti.sync_status, "pending");
+    assert.equal(ti.repo_ref, "acme/app");
+    assert.equal(ti.idempotency_key, keyOf(t, ticketId!));
+    const ob = await outboxRow(keyOf(t, ticketId!));
+    assert.equal(ob.status, "pending");
+
+    const tracker = fakeTracker();
+    await dispatcherWith(tracker.provider).runOnce();
 
     assert.equal(tracker.calls.length, 1);
     assert.equal(tracker.calls[0]?.repo, "acme/app");
     assert.match(tracker.calls[0]?.issue.body ?? "", /\*\*Priority:\*\* P1/);
     assert.match(tracker.calls[0]?.issue.body ?? "", /1\. open cart/);
+    assert.match(tracker.calls[0]?.issue.body ?? "", /### Expected\norder placed/);
     assert.deepEqual(tracker.calls[0]?.issue.labels, ["bug", "priority:p1"]);
-    assert.equal((out.result as { outcome: string }).outcome, "synced");
 
-    const [ticket] = await rows("SELECT tracker_ref FROM tickets WHERE id = $1", [ticketIds[0]]);
-    assert.equal(ticket?.tracker_ref, "https://github.com/acme/app/issues/100");
-    const [ti] = await rows("SELECT sync_status, external_issue_number, external_issue_url, sync_mode, idempotency_key, last_error FROM tracker_issues WHERE ticket_id = $1", [ticketIds[0]]);
-    assert.equal(ti?.sync_status, "created");
-    assert.equal(ti?.external_issue_number, 100);
-    assert.equal(ti?.sync_mode, "general");
-    assert.equal(ti?.idempotency_key, `github:${t.tenantId}:${ticketIds[0]}:general`);
-    assert.equal(ti?.last_error, null);
-    const events = await rows("SELECT type, actor_type, actor_ref FROM ticket_events WHERE ticket_id = $1 AND type = 'tracker.issue_created'", [ticketIds[0]]);
+    const after1 = await trackerRow(ticketId!);
+    assert.equal(after1.sync_status, "created");
+    assert.equal(after1.external_issue_number, 100);
+    assert.equal(after1.external_issue_url, "https://github.com/acme/app/issues/100");
+    assert.equal(after1.last_error, null);
+    const [ticket] = await rows("SELECT tracker_ref FROM tickets WHERE id = $1", [ticketId]);
+    assert.equal(ticket.tracker_ref, "https://github.com/acme/app/issues/100");
+    const events = await rows("SELECT actor_ref, payload FROM ticket_events WHERE ticket_id = $1 AND type = 'tracker.issue_created'", [ticketId]);
     assert.equal(events.length, 1);
-    assert.equal(events[0]?.actor_ref, "pipeline:github-sync");
-  });
+    assert.equal(events[0].actor_ref, "outbox:github.create_issue");
+    assert.equal((await outboxRow(keyOf(t, ticketId!))).status, "done");
+    assert.equal((await outboxRow(keyOf(t, ticketId!))).last_error, "created");
 
-  it("a replay of the same stage never opens a second issue", async () => {
-    const t = await createTenant(db.owner);
-    await integration(t);
-    const { messageId, ticketIds } = await createTickets(t, extraction());
-    const tracker = fakeTracker();
-    const run = () => syncWith(tracker.provider)(stageCtx(t, messageId, { ticket: { ticketIds } }, "github-sync"));
-
-    await run();
-    const second = await run();
-
+    // A second delivery of the same job never creates again.
+    await handlerWith(tracker.provider)(handlerInput(t, ticketId!, { ticketId }));
     assert.equal(tracker.calls.length, 1);
-    const outcomes = (second.result as { tickets: { status: string; reason?: string }[] }).tickets;
-    assert.equal(outcomes[0]?.status, "skipped");
-    assert.equal(outcomes[0]?.reason, "already_created");
   });
 
-  it("a replay never opens a second issue for a row whose issue was closed on GitHub", async () => {
+  it("links an issue GitHub already has (crash recovery) instead of creating a second one", async () => {
     const t = await createTenant(db.owner);
     await integration(t);
-    const { messageId, ticketIds } = await createTickets(t, extraction());
+    const { ticketIds: [ticketId] } = await createTickets(t, extraction());
     const tracker = fakeTracker();
-    const run = () => syncWith(tracker.provider)(stageCtx(t, messageId, { ticket: { ticketIds } }, "github-sync"));
-    await run();
-    await db.owner.query("UPDATE tracker_issues SET sync_status = 'closed' WHERE ticket_id = $1", [ticketIds[0]]);
+    tracker.foundAs({ id: "900", number: 7, url: "https://github.com/acme/app/issues/7", state: "open" });
 
-    const again = await run();
+    const note = await handlerWith(tracker.provider)(handlerInput(t, ticketId!, { ticketId }));
 
-    assert.equal(tracker.calls.length, 1);
-    assert.equal((again.result as { tickets: { reason?: string }[] }).tickets[0]?.reason, "already_created");
+    assert.deepEqual(note, { note: "linked_existing" });
+    assert.equal(tracker.calls.length, 0, "createIssue is never called when the issue exists");
+    const ti = await trackerRow(ticketId!);
+    assert.equal(ti.sync_status, "created");
+    assert.equal(ti.external_issue_number, 7);
+    // Finish the row the way the dispatcher would, so it cannot leak into a later test.
+    await db.owner.query("UPDATE outbox SET status = 'done' WHERE idempotency_key = $1", [keyOf(t, ticketId!)]);
   });
 
-  it("a GitHub 403 marks the row failed with a code, leaves the ticket intact and does not throw", async () => {
+  it("a GitHub 403 fails the outbox row and marks the link failed without touching the ticket", async () => {
     const t = await createTenant(db.owner);
     await integration(t);
-    const { messageId, ticketIds } = await createTickets(t, extraction());
-    const tracker = fakeTracker(new TrackerError("forbidden", "denied"));
-
-    const out = await syncWith(tracker.provider)(stageCtx(t, messageId, { ticket: { ticketIds } }, "github-sync"));
-
-    const [ticket] = await rows("SELECT status, tracker_ref FROM tickets WHERE id = $1", [ticketIds[0]]);
-    assert.equal(ticket?.tracker_ref, null);
-    assert.notEqual(ticket?.status, "closed");
-    const [ti] = await rows("SELECT sync_status, last_error FROM tracker_issues WHERE ticket_id = $1", [ticketIds[0]]);
-    assert.equal(ti?.sync_status, "failed");
-    assert.equal(ti?.last_error, "forbidden");
-    const tickets = (out.result as { tickets: { status: string; error?: string }[] }).tickets;
-    assert.equal(tickets[0]?.status, "failed");
-    assert.equal(tickets[0]?.error, "forbidden");
-  });
-
-  it("a 5xx from GitHub is recorded as failed (no retry storm inside the stage)", async () => {
-    const t = await createTenant(db.owner);
-    await integration(t);
-    const { messageId, ticketIds } = await createTickets(t, extraction());
-    const tracker = fakeTracker(new TrackerError("server", "503"));
-    await syncWith(tracker.provider)(stageCtx(t, messageId, { ticket: { ticketIds } }, "github-sync"));
-    assert.equal(tracker.calls.length, 1);
-    const [ti] = await rows("SELECT sync_status, last_error FROM tracker_issues WHERE ticket_id = $1", [ticketIds[0]]);
-    assert.equal(ti?.sync_status, "failed");
-    assert.equal(ti?.last_error, "server");
-  });
-
-  it("with no active GitHub integration, or no repo selected, nothing is created", async () => {
-    const t = await createTenant(db.owner);
-    const { messageId, ticketIds } = await createTickets(t, extraction());
+    const { ticketIds: [ticketId] } = await createTickets(t, extraction());
     const tracker = fakeTracker();
-    const ctx = () => stageCtx(t, messageId, { ticket: { ticketIds } }, "github-sync");
+    tracker.failWith(new TrackerError("forbidden", "denied"));
 
-    await integration(t, { status: "revoked" });
-    assert.equal(((await syncWith(tracker.provider)(ctx())).result as { outcome: string }).outcome, "not_configured");
-    await integration(t, { repo: null });
-    assert.equal(((await syncWith(tracker.provider)(ctx())).result as { outcome: string }).outcome, "not_configured");
-    assert.equal(tracker.calls.length, 0);
-    assert.equal((await rows("SELECT 1 FROM tracker_issues WHERE ticket_id = $1", [ticketIds[0]])).length, 0);
+    await dispatcherWith(tracker.provider).runOnce();
+
+    const ob = await outboxRow(keyOf(t, ticketId!));
+    assert.equal(ob.status, "failed");
+    const ti = await trackerRow(ticketId!);
+    assert.equal(ti.sync_status, "failed");
+    assert.equal(ti.last_error, "forbidden");
+    const [ticket] = await rows("SELECT status, tracker_ref FROM tickets WHERE id = $1", [ticketId]);
+    assert.equal(ticket.tracker_ref, null);
+    assert.notEqual(ticket.status, "closed");
   });
 
-  it("a missing token fails the row with missing_credentials and makes no request", async () => {
+  it("a 5xx retries through the outbox and ends created once GitHub recovers", async () => {
+    const t = await createTenant(db.owner);
+    await integration(t);
+    const { ticketIds: [ticketId] } = await createTickets(t, extraction());
+    const tracker = fakeTracker();
+    tracker.failWith(new TrackerError("server", "503"));
+
+    await dispatcherWith(tracker.provider).runOnce();
+    assert.equal((await outboxRow(keyOf(t, ticketId!))).status, "pending", "a transient failure retries");
+    assert.equal((await trackerRow(ticketId!)).sync_status, "failed");
+
+    tracker.failWith(null);
+    await dispatcherWith(tracker.provider).runOnce();
+
+    assert.equal(tracker.calls.length, 2, "one failed attempt and one success");
+    assert.equal((await trackerRow(ticketId!)).sync_status, "created");
+    assert.equal((await outboxRow(keyOf(t, ticketId!))).status, "done");
+  });
+
+  it("missing credentials fail the row with missing_credentials and make no request", async () => {
     const t = await createTenant(db.owner);
     await integration(t, { credentials: "env:NOT_SET_ANYWHERE" });
-    const { messageId, ticketIds } = await createTickets(t, extraction());
+    const { ticketIds: [ticketId] } = await createTickets(t, extraction());
     const tracker = fakeTracker();
-    await syncWith(tracker.provider)(stageCtx(t, messageId, { ticket: { ticketIds } }, "github-sync"));
+
+    await dispatcherWith(tracker.provider).runOnce();
+
     assert.equal(tracker.calls.length, 0);
-    const [ti] = await rows("SELECT sync_status, last_error FROM tracker_issues WHERE ticket_id = $1", [ticketIds[0]]);
-    assert.equal(ti?.sync_status, "failed");
-    assert.equal(ti?.last_error, "missing_credentials");
+    assert.equal(tracker.finds, 0);
+    const ti = await trackerRow(ticketId!);
+    assert.equal(ti.sync_status, "failed");
+    assert.equal(ti.last_error, "missing_credentials");
+    assert.equal((await outboxRow(keyOf(t, ticketId!))).status, "failed");
   });
 
-  it("quarantined tickets are skipped and get no tracker row", async () => {
+  it("with GitHub disconnected the ticket is created normally and no link or job is written", async () => {
     const t = await createTenant(db.owner);
-    await integration(t);
-    const { messageId, ticketIds } = await createTickets(t, extraction({ contains_sensitive_data: true }));
-    const tracker = fakeTracker();
-    const out = await syncWith(tracker.provider)(stageCtx(t, messageId, { ticket: { ticketIds } }, "github-sync"));
-    assert.equal(tracker.calls.length, 0);
-    const tickets = (out.result as { tickets: { status: string; reason?: string }[] }).tickets;
-    assert.equal(tickets[0]?.reason, "quarantined");
-    assert.equal((await rows("SELECT 1 FROM tracker_issues WHERE ticket_id = $1", [ticketIds[0]])).length, 0);
+    const { ticketIds: [ticketId] } = await createTickets(t, extraction());
+    assert.equal(await trackerRow(ticketId!), undefined);
+    assert.equal(await outboxRow(keyOf(t, ticketId!)), undefined);
+    const kinds = (await rows("SELECT kind FROM outbox WHERE payload->>'ticketId' = $1", [ticketId])).map((r) => r.kind);
+    assert.deepEqual(kinds, ["switch.create_room"]);
   });
 
-  it("approval_policy = human stages nothing automatically", async () => {
+  it("approval_policy = human stages the row; approval releases it and only then is the issue created", async () => {
     const t = await createTenant(db.owner);
     await integration(t, { approval: "human" });
-    const { messageId, ticketIds } = await createTickets(t, extraction());
+    const { ticketIds: [ticketId] } = await createTickets(t, extraction());
     const tracker = fakeTracker();
-    const out = await syncWith(tracker.provider)(stageCtx(t, messageId, { ticket: { ticketIds } }, "github-sync"));
-    assert.equal((out.result as { outcome: string }).outcome, "awaiting_approval");
+
+    // Staged rows are never due: the dispatcher leaves them alone.
+    await dispatcherWith(tracker.provider).runOnce();
     assert.equal(tracker.calls.length, 0);
+    assert.equal((await outboxRow(keyOf(t, ticketId!))).status, "staged");
+    assert.equal((await trackerRow(ticketId!)).sync_status, "pending");
+
+    const state = await githubSyncStage()(stageCtx(t, "00000000-0000-4000-8000-000000000001", { ticket: { ticketIds: [ticketId!] } }, "github-sync"));
+    assert.deepEqual((state.result as { tickets: { state: string }[] }).tickets[0], { ticketId: ticketId!, state: "awaiting_approval" });
+
+    let approved = false;
+    await withTenant(db.worker, t.tenantId, async (c) => { approved = await approveGithubSync(c, t.tenantId, ticketId!); });
+    assert.equal(approved, true);
+    assert.equal((await outboxRow(keyOf(t, ticketId!))).status, "pending");
+
+    await dispatcherWith(tracker.provider).runOnce();
+    assert.equal(tracker.calls.length, 1);
+    assert.equal((await trackerRow(ticketId!)).sync_status, "created");
+
+    // Approving again finds nothing staged.
+    await withTenant(db.worker, t.tenantId, async (c) => { approved = await approveGithubSync(c, t.tenantId, ticketId!); });
+    assert.equal(approved, false);
+  });
+
+  it("a quarantined ticket is skipped: no issue, link left pending", async () => {
+    const t = await createTenant(db.owner);
+    await integration(t);
+    const { ticketIds: [ticketId] } = await createTickets(t, extraction());
+    await db.owner.query("UPDATE tickets SET status = 'quarantined' WHERE id = $1", [ticketId]);
+    const tracker = fakeTracker();
+
+    await dispatcherWith(tracker.provider).runOnce();
+
+    assert.equal(tracker.calls.length, 0);
+    assert.equal((await trackerRow(ticketId!)).sync_status, "pending");
+    assert.equal((await outboxRow(keyOf(t, ticketId!))).status, "done");
+    assert.equal((await outboxRow(keyOf(t, ticketId!))).last_error, "skipped_quarantined");
+  });
+
+  it("a ticket released from quarantine gets its rows then, and syncs once", async () => {
+    const t = await createTenant(db.owner);
+    await integration(t);
+    const { ticketIds: [ticketId] } = await createTickets(t, extraction({ contains_sensitive_data: true }));
+    assert.equal(await trackerRow(ticketId!), undefined, "a sensitive ticket writes nothing until released");
+
+    await withTenant(db.worker, t.tenantId, (c) => transitionTicket(c, {
+      ticketId: ticketId!, to: "triaged", actor: { type: "human", ref: "test" }, reason: "reviewed",
+    }));
+    assert.equal((await trackerRow(ticketId!)).sync_status, "pending");
+
+    const tracker = fakeTracker();
+    await dispatcherWith(tracker.provider).runOnce();
+    assert.equal(tracker.calls.length, 1);
+    assert.equal((await trackerRow(ticketId!)).sync_status, "created");
   });
 
   it("creates an issue for each ticket of a multi-issue message, using that issue's steps", async () => {
     const t = await createTenant(db.owner);
     await integration(t);
-    const { messageId, ticketIds } = await createTickets(t, extraction({
+    const outcome = extraction({
       issues: [issue({ title: "First bug" }), issue({ title: "Second bug", steps_to_reproduce: ["login"] })],
-    }));
+    });
+    const { ticketIds } = await createTickets(t, outcome);
     const tracker = fakeTracker();
-    await syncWith(tracker.provider)(stageCtx(t, messageId, { ticket: { ticketIds }, extract: extraction({
-      issues: [issue({ title: "First bug" }), issue({ title: "Second bug", steps_to_reproduce: ["login"] })],
-    }) }, "github-sync"));
+
+    await dispatcherWith(tracker.provider).runOnce();
+
+    assert.equal(tracker.calls.length, 2);
     assert.deepEqual(tracker.calls.map((c) => c.issue.title), ["First bug", "Second bug"]);
     assert.match(tracker.calls[1]?.issue.body ?? "", /1\. login/);
+    assert.equal((await rows("SELECT count(*)::int AS n FROM tracker_issues WHERE tenant_id = $1 AND sync_status = 'created'", [t.tenantId]))[0].n, 2);
+  });
+});
+
+describe("github-sync stage reports sync state", () => {
+  it("maps every situation to a state and never writes", async () => {
+    const t = await createTenant(db.owner);
+    await integration(t);
+    const report = async (ticketIds: string[], messageId = "00000000-0000-4000-8000-000000000002") => {
+      const out = await githubSyncStage()(stageCtx(t, messageId, { ticket: { ticketIds } }, "github-sync"));
+      return (out.result as { tickets: { state: string }[] }).tickets.map((x) => x.state);
+    };
+
+    const empty = await githubSyncStage()(stageCtx(t, "00000000-0000-4000-8000-000000000003", { ticket: { ticketIds: [] } }, "github-sync"));
+    assert.equal((empty.result as { outcome: string }).outcome, "no_tickets");
+
+    // Queued: link and job written, issue not created yet.
+    const { ticketIds: [queued] } = await createTickets(t, extraction());
+    assert.deepEqual(await report([queued!]), ["queued"]);
+
+    // Created: the handler ran.
+    const tracker = fakeTracker();
+    await dispatcherWith(tracker.provider).runOnce();
+    assert.deepEqual(await report([queued!]), ["created"]);
+
+    // Not configured: a tenant with no integration writes nothing.
+    const bare = await createTenant(db.owner);
+    const bareTickets = await createTickets(bare, extraction());
+    const bareOut = await githubSyncStage()(
+      stageCtx(bare, bareTickets.messageId, { ticket: { ticketIds: bareTickets.ticketIds } }, "github-sync"));
+    assert.deepEqual((bareOut.result as { tickets: { state: string }[] }).tickets.map((x) => x.state), ["not_configured"]);
+
+    // Quarantined with no rows.
+    const { ticketIds: [held] } = await createTickets(t, extraction({ contains_sensitive_data: true }));
+    assert.deepEqual(await report([held!]), ["quarantined"]);
+
+    // Failed: the last attempt did not reach GitHub.
+    const { ticketIds: [failed] } = await createTickets(t, extraction({ issues: [issue({ title: "Second checkout bug" })] }));
+    const failing = fakeTracker();
+    failing.failWith(new TrackerError("forbidden", "denied"));
+    await dispatcherWith(failing.provider).runOnce();
+    assert.deepEqual(await report([failed!]), ["failed"]);
   });
 });

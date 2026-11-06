@@ -47,7 +47,7 @@ export const SYNC_STATUSES = ["pending", "created", "failed", "closed"] as const
 export type SyncStatus = (typeof SYNC_STATUSES)[number];
 
 /** Outbox job kinds: every external side effect goes through one of these (architecture §4.6). */
-export const OUTBOX_KINDS = ["github.create_issue", "switch.create_room", "client.send"] as const;
+export const OUTBOX_KINDS = ["github.create_issue", "github.draft", "github.comment", "switch.create_room", "client.send"] as const;
 export type OutboxKind = (typeof OUTBOX_KINDS)[number];
 
 /** Ordered pipeline stages run by the orchestrator (architecture §4.3, Issue #6). */
@@ -66,7 +66,7 @@ export type PipelineStage = (typeof PIPELINE_STAGES)[number];
 export const QUEUE_STAGES = ["ingest", ...PIPELINE_STAGES] as const;
 export type QueueStage = (typeof QUEUE_STAGES)[number];
 
-export const OUTBOX_STATUSES = ["pending", "processing", "done", "failed"] as const;
+export const OUTBOX_STATUSES = ["pending", "staged", "processing", "done", "failed"] as const;
 export type OutboxStatus = (typeof OUTBOX_STATUSES)[number];
 
 export const BOT_STATUSES = ["pending", "active", "error", "revoked"] as const;

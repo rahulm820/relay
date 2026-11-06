@@ -140,3 +140,69 @@ test("retryAfterMs prefers Retry-After and falls back to the reset epoch", () =>
   assert.equal(retryAfterMs(res({})), undefined);
   assert.equal(retryAfterMs(res({ "retry-after": "soon" })), undefined);
 });
+
+// --- retrieveContext (#13): read-only context for code-aware drafting -----------------------------
+
+const b64 = (s: string) => Buffer.from(s).toString("base64");
+const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
+
+/** Routes each request by URL; unmatched URLs 404. Records every URL called. */
+function routedFetch(routes: [RegExp, () => Response][]) {
+  const urls: string[] = [];
+  const fetchImpl = (async (url: string) => {
+    urls.push(String(url));
+    const hit = routes.find(([re]) => re.test(String(url)));
+    return hit ? hit[1]() : new Response("not found", { status: 404 });
+  }) as typeof fetch;
+  return { fetchImpl, urls };
+}
+
+test("retrieveContext gathers files, docs, issues and commits, filtering pull requests", async () => {
+  const { fetchImpl, urls } = routedFetch([
+    [/\/search\/code/, () => json({ items: [{ path: "src/checkout.ts" }, { path: "src/checkout.ts" }, { path: "src/cart.ts" }] })],
+    [/\/contents\/src\/checkout\.ts/, () => json({ content: b64("export const pay = () => 500;"), encoding: "base64" })],
+    [/\/contents\/src\/cart\.ts/, () => json({ content: b64("cart code"), encoding: "base64" })],
+    [/\/readme/, () => json({ path: "README.md", content: b64("# App"), encoding: "base64" })],
+    [/\/issues/, () => json([
+      { number: 5, title: "Checkout 500", state: "open", html_url: "u5" },
+      { number: 6, title: "Refactor cart", state: "open", html_url: "u6", pull_request: {} },
+      { number: 7, title: "Old checkout bug", state: "closed", html_url: "u7" },
+    ])],
+    [/\/commits/, () => json([{ sha: "abcdef123456", commit: { message: "fix checkout\n\nlong body", author: { date: "2026-01-01T00:00:00Z" } } }])],
+  ]);
+  const gh = new GitHubProvider({ token: TOKEN, fetchImpl });
+
+  const ctx = await gh.retrieveContext("acme/app", 'checkout 500 "quoted"');
+
+  assert.deepEqual(ctx.files.map((f) => f.path), ["src/checkout.ts", "src/cart.ts"], "duplicate search hits collapse");
+  assert.equal(ctx.files[0]?.content, "export const pay = () => 500;");
+  assert.deepEqual(ctx.docs, [{ path: "README.md", content: "# App" }]);
+  assert.deepEqual(ctx.issues, [
+    { number: 5, title: "Checkout 500", state: "open", url: "u5" },
+    { number: 7, title: "Old checkout bug", state: "closed", url: "u7" },
+  ], "pull requests are excluded");
+  assert.deepEqual(ctx.commits, [{ sha: "abcdef123456", message: "fix checkout", date: "2026-01-01T00:00:00Z" }]);
+  assert.match(urls[0] ?? "", /\/search\/code\?q=repo%3Aacme%2Fapp/);
+  assert.ok(urls.every((u) => !u.includes(TOKEN)), "the token never appears in a URL");
+});
+
+test("retrieveContext tolerates an empty code search and a missing README", async () => {
+  const { fetchImpl } = routedFetch([
+    [/\/search\/code/, () => json({ items: [] })],
+    [/\/readme/, () => new Response("not found", { status: 404 })],
+    [/\/issues/, () => json([])],
+    [/\/commits/, () => json([])],
+  ]);
+  const ctx = await new GitHubProvider({ token: TOKEN, fetchImpl }).retrieveContext("acme/app", "nothing here");
+  assert.deepEqual(ctx, { files: [], docs: [], issues: [], commits: [] });
+});
+
+test("retrieveContext propagates a failed endpoint as a TrackerError so the outbox retries", async () => {
+  const { fetchImpl } = routedFetch([
+    [/\/search\/code/, () => new Response("boom", { status: 503 })],
+  ]);
+  await assert.rejects(
+    new GitHubProvider({ token: TOKEN, fetchImpl }).retrieveContext("acme/app", "checkout"),
+    (err: unknown) => err instanceof TrackerError && err.code === "server",
+  );
+});

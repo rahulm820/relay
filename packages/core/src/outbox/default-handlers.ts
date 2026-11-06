@@ -6,7 +6,8 @@ export const NOOP_NOTE = "noop handler (skeleton): no side effect performed";
 /**
  * Skeleton: completes the row without doing anything and says so on the row and in the log.
  * Chosen over leaving kinds unregistered so skeleton-phase rows do not retry forever; each later issue
- * registers the real handler: github.create_issue #9/#12, switch.create_room #15, client.send #16.
+ * registers the real handler: github.create_issue #12, github.draft #13, switch.create_room #15,
+ * client.send #16.
  */
 const noop = (kind: OutboxKind, log: (e: object) => void): OutboxHandler => async (input) => {
   log({ event: "outbox_noop", kind, outboxId: input.outboxId, tenantId: input.tenantId, traceId: input.traceId });

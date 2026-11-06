@@ -91,9 +91,9 @@ describe("ticket stage", () => {
     assert.equal(events[0].type, "created");
     assert.equal(events[0].actor_type, "system");
     assert.ok(!JSON.stringify(events).includes(MARKER), "events carry no client text");
+    // No GitHub integration in this suite: only the Switch row is written (issue #12 gates GitHub on the integration).
     const outbox = await outboxOf(ticket.id);
     assert.deepEqual(outbox.map((o) => [o.kind, o.idempotency_key]), [
-      ["github.create_issue", `github:${t.tenantId}:${ticket.id}:general`],
       ["switch.create_room", `switch:${t.tenantId}:${ticket.id}`],
     ]);
     for (const o of outbox) {
@@ -112,7 +112,7 @@ describe("ticket stage", () => {
     assert.equal(tickets.length, 2);
     for (const tk of tickets) {
       assert.equal((await eventsOf(tk.id)).length, 1);
-      assert.equal((await outboxOf(tk.id)).length, 2);
+      assert.equal((await outboxOf(tk.id)).length, 1);
     }
   });
 
@@ -122,7 +122,7 @@ describe("ticket stage", () => {
     const tickets = await ticketsOf(messageId);
     assert.deepEqual(tickets.map((x) => [x.source_issue_index, x.category, x.priority]), [[0, "bug", "P1"], [1, "ui", "P3"]]);
     assert.notEqual(tickets[0].id, tickets[1].id);
-    assert.equal((await rows("SELECT count(*)::int AS n FROM outbox WHERE payload->>'ticketId' = ANY($1)", [tickets.map((x) => x.id)]))[0].n, 4);
+    assert.equal((await rows("SELECT count(*)::int AS n FROM outbox WHERE payload->>'ticketId' = ANY($1)", [tickets.map((x) => x.id)]))[0].n, 2);
   });
 
   it("an LLM fallback becomes a quarantined P3 'needs human triage' ticket that is still routed", async () => {
@@ -134,7 +134,7 @@ describe("ticket stage", () => {
     const events = await eventsOf(ticket.id);
     assert.deepEqual(events.map((e) => e.type), ["created", "status_changed"]);
     assert.deepEqual(events[1].payload, { from: "received", to: "quarantined", reason: "extraction_fallback:timeout" });
-    assert.equal((await outboxOf(ticket.id)).length, 2);
+    assert.equal((await outboxOf(ticket.id)).length, 1);
   });
 
   it("low confidence is quarantined with priority at least P3, but never lowers urgency", async () => {
@@ -143,7 +143,7 @@ describe("ticket stage", () => {
     const [q, urgent] = await ticketsOf(messageId);
     assert.deepEqual([q.status, q.priority], ["quarantined", "P3"]);
     assert.deepEqual([urgent.status, urgent.priority], ["quarantined", "P1"]);
-    assert.equal((await outboxOf(q.id)).length, 2);
+    assert.equal((await outboxOf(q.id)).length, 1);
     const ev = await eventsOf(q.id);
     assert.equal(ev[1].payload.reason, "low_confidence");
   });
@@ -156,17 +156,17 @@ describe("ticket stage", () => {
     assert.equal((await outboxOf(ticket.id)).length, 0);
     await tx(t.tenantId, (c) => transitionTicket(c, { ticketId: ticket.id, to: "triaged", actor: HUMAN, reason: "reviewed" }));
     const released = await outboxOf(ticket.id);
-    assert.deepEqual(released.map((o) => o.kind), ["github.create_issue", "switch.create_room"]);
+    assert.deepEqual(released.map((o) => o.kind), ["switch.create_room"]);
     // Leaving quarantine again and back never duplicates the rows.
     await tx(t.tenantId, (c) => transitionTicket(c, { ticketId: ticket.id, to: "escalated", actor: HUMAN }));
-    assert.equal((await outboxOf(ticket.id)).length, 2);
+    assert.equal((await outboxOf(ticket.id)).length, 1);
   });
 
   it("off-topic and non-complaint messages create no ticket and say why", async () => {
     for (const [over, name] of [[{ off_topic: true }, "off_topic"], [{ is_complaint: false }, "not_a_complaint"]] as const) {
       const { t, messageId } = await setup();
       const out = await runStage(t, messageId, { extract: extraction(over) });
-      assert.deepEqual(out.result, { outcome: name, ticketIds: [] });
+      assert.deepEqual(out.result, { outcome: name, ticketIds: [], duplicates: [] });
       assert.equal((await ticketsOf(messageId)).length, 0);
     }
   });
@@ -389,9 +389,9 @@ describe("end to end through the real orchestrator", () => {
       const [ticket] = await ticketsOf(messageId);
       assert.ok(ticket);
       assert.equal(ticket.title.includes(MARKER), true);
-      assert.equal((await outboxOf(ticket.id)).length, 2);
+      assert.equal((await outboxOf(ticket.id)).length, 1); // switch only: no GitHub integration here (#12)
       const run = (await rows("SELECT stage_results FROM pipeline_runs WHERE message_id = $1", [messageId]))[0];
-      assert.deepEqual(run.stage_results.ticket, { outcome: "tickets", ticketIds: [ticket.id] });
+      assert.deepEqual(run.stage_results.ticket, { outcome: "tickets", ticketIds: [ticket.id], duplicates: [] });
       assert.ok(!JSON.stringify(logs).includes(MARKER));
       assert.equal(await redis.xlen("q.dlq"), 0);
     } finally {

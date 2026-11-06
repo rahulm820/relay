@@ -68,10 +68,17 @@ const telegramConversations = async (tenantId: string) =>
 
 describe("accepting messages", () => {
   it("stores a redacted projection and encrypted original, then queues only the message id", async () => {
+    // Warm the path with a different bot (the first request on a fresh server pays one-off connection costs), then
+    // clear the queue so the assertions below see only this request.
+    const app = server();
+    const warm = await bot();
+    await post(app, warm, warm.secret, update(message({ text: "warm up" })));
+    await flushQueueKeys(redis);
+
     const b = await bot();
     const raw = `mail jane@example.com or call +1 (415) 555-2671, token: abc123secret ${MARKER}`;
     const u = update(message({ text: raw }));
-    const res = await post(server(), b, b.secret, u);
+    const res = await post(app, b, b.secret, u);
     assert.equal(res.statusCode, 200);
     const row = (await db.owner.query("SELECT id, platform_message_id, text_redacted, text_encrypted, direction FROM messages WHERE tenant_id = $1", [b.tenantId])).rows[0];
     assert.equal(row.platform_message_id, "555:7");

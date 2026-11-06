@@ -1,7 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { describe, it } from "node:test";
-import { fileURLToPath } from "node:url";
 import { CATEGORIES, type Category, type ExtractFn, type ExtractionResult } from "@relay/shared";
 import { formatReport, loadGoldenSet, runGolden, type GoldenSet } from "./golden.js";
 
@@ -87,17 +85,11 @@ describe("runGolden metrics", () => {
   });
 });
 
-describe("formatReport and the command", () => {
-  it("prints the headline metrics and says plainly when duplicate detection is not available", async () => {
+describe("formatReport", () => {
+  it("prints the headline metrics and says plainly when no embedding model is configured", async () => {
     const out = formatReport(await runGolden(small, async () => extracted("bug")));
     assert.match(out, /category accuracy:\s+33\.3% \(1\/3\)/);
-    assert.match(out, /false-duplicate rate:\s+n\/a \(duplicate detection, issue #11, is not implemented yet\)/);
+    assert.match(out, /false-duplicate rate:\s+n\/a \(set LLM_EMBED_MODEL to measure it\)/);
     assert.match(out, /category misses:/);
-  });
-
-  it("the command skips cleanly and exits 0 when no model is configured", () => {
-    const cli = fileURLToPath(new URL("./golden-cli.ts", import.meta.url));
-    const out = execFileSync(process.execPath, ["--import", "tsx", cli], { env: { PATH: process.env["PATH"] ?? "" }, encoding: "utf8" });
-    assert.match(out, /SKIPPED/);
   });
 });

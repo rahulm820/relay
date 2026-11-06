@@ -63,7 +63,7 @@ describe("authentication", () => {
   it("rejects every route without a principal", async () => {
     const app = server();
     const id = randomUUID();
-    for (const [m, u, b] of [["GET", "/api/tickets"], ["GET", `/api/tickets/${id}`], ["PATCH", `/api/tickets/${id}`, { priority: "P1" }], ["POST", `/api/tickets/${id}/transition`, { to: "triaged" }]] as const) {
+    for (const [m, u, b] of [["GET", "/api/tickets"], ["GET", `/api/tickets/${id}`], ["PATCH", `/api/tickets/${id}`, { priority: "P1" }], ["POST", `/api/tickets/${id}/transition`, { to: "triaged" }], ["POST", `/api/tickets/${id}/github-sync/approve`]] as const) {
       const res = await call(app, m, u, null, b);
       assert.equal(res.statusCode, 401, `${m} ${u}`);
       assert.deepEqual(res.json(), { error: "unauthorized" });
@@ -233,6 +233,49 @@ describe("status changes through the API queue a client update", () => {
     const id = (await makeTickets(t, [{}]))[0]!;
     assert.equal((await call(app, "POST", `/api/tickets/${id}/transition`, t, { to: "resolved" })).statusCode, 409);
     assert.equal((await clientRows(id)).length, 0);
+  });
+});
+
+describe("github sync approval (#12)", () => {
+  const stagedRow = async (t: TestTenant, ticketId: string) => {
+    const key = `github:${t.tenantId}:${ticketId}:general`;
+    await db.owner.query(
+      "INSERT INTO outbox (tenant_id, kind, payload, idempotency_key, status) VALUES ($1, 'github.create_issue', $2, $3, 'staged')",
+      [t.tenantId, JSON.stringify({ ticketId }), key]);
+    return key;
+  };
+  const statusOf = async (key: string) => (await db.owner.query("SELECT status FROM outbox WHERE idempotency_key = $1", [key])).rows[0]?.status;
+
+  it("releases a staged row to the dispatcher, exactly once, with an audit trail", async () => {
+    const app = server();
+    const t = await createTenant(db.owner);
+    const [ticketId] = await makeTickets(t, [{}]);
+    const key = await stagedRow(t, ticketId!);
+
+    const res = await call(app, "POST", `/api/tickets/${ticketId}/github-sync/approve`, t);
+    assert.equal(res.statusCode, 200);
+    assert.deepEqual(res.json(), { approved: true });
+    assert.equal(await statusOf(key), "pending");
+
+    const again = await call(app, "POST", `/api/tickets/${ticketId}/github-sync/approve`, t);
+    assert.equal(again.statusCode, 409, "nothing staged the second time");
+    assert.equal(await statusOf(key), "pending");
+
+    const audit = (await db.owner.query("SELECT action, target FROM audit_log WHERE tenant_id = $1 AND action = 'tickets.approve_github_sync'", [t.tenantId])).rows;
+    assert.equal(audit.length, 1);
+    assert.equal(audit[0].target, `tickets:${ticketId}`);
+  });
+
+  it("a ticket with nothing staged, or another tenant's ticket, gets the same 409", async () => {
+    const app = server();
+    const a = await createTenant(db.owner);
+    const b = await createTenant(db.owner);
+    const [plain] = await makeTickets(a, [{}]);
+    const [other] = await makeTickets(b, [{}]);
+    assert.equal((await call(app, "POST", `/api/tickets/${plain}/github-sync/approve`, a)).statusCode, 409);
+    assert.equal((await call(app, "POST", `/api/tickets/${other}/github-sync/approve`, a)).statusCode, 409);
+    const key = `github:${b.tenantId}:${other}:general`;
+    assert.equal((await db.owner.query("SELECT status FROM outbox WHERE idempotency_key = $1", [key])).rows[0]?.status, undefined, "b's row is untouched");
   });
 });
 
