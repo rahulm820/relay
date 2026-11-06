@@ -7,4 +7,5 @@ export * from "./tickets/index.js";
 export { Redis } from "ioredis";
 export * from "./github-sync/index.js";
 export * from "./priority/index.js";
+export * from "./dedupe/index.js";
 export * from "./reconcile/index.js";

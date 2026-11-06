@@ -171,8 +171,8 @@ describe("a reply to a question belongs to the waiting ticket", () => {
     const id = (ticket["ticketIds"] as string[])[0]!;
     const reply = await createMessage(db.owner, t, "it is version 4.2");
     const run = () => ticketStage()({ ...ctx(t, reply, { extract: extraction() }), stage: "ticket" });
-    assert.deepEqual((await run()).result, { outcome: "reply_appended", ticketIds: [id] });
-    assert.deepEqual((await run()).result, { outcome: "reply_appended", ticketIds: [id] });
+    assert.deepEqual((await run()).result, { outcome: "reply_appended", ticketIds: [id], duplicates: [] });
+    assert.deepEqual((await run()).result, { outcome: "reply_appended", ticketIds: [id], duplicates: [] });
     assert.equal((await rows("SELECT status FROM tickets WHERE id = $1", [id]))[0].status, "triaged");
     assert.equal((await rows("SELECT count(*)::int AS n FROM tickets WHERE source_message_id = $1", [reply]))[0].n, 0);
     assert.equal((await rows("SELECT count(*)::int AS n FROM ticket_events WHERE ticket_id = $1 AND type = 'client_replied'", [id]))[0].n, 1);

@@ -62,6 +62,13 @@ const EnvSchema = z.object({
   LLM_BASE_URL: optionalUrl,
   LLM_FAST_MODEL: optionalString,
   LLM_STRONG_MODEL: optionalString,
+  /** Embedding model for duplicate detection (#11). Unset disables embedding-based matching. */
+  LLM_EMBED_MODEL: optionalString,
+
+  /** Cosine similarity at or above which two open tickets are duplicates (#11). */
+  DEDUPE_SIMILARITY: z.preprocess(empty, z.coerce.number().min(0).max(1).default(0.9)),
+  /** Only tickets created this many hours ago or less are duplicate candidates (#11). */
+  DEDUPE_WINDOW_HOURS: z.preprocess(empty, z.coerce.number().int().min(1).max(24 * 30).default(72)),
 });
 
 export interface Config {
@@ -92,7 +99,9 @@ export interface Config {
     baseUrl?: string;
     fastModel?: string;
     strongModel?: string;
+    embedModel?: string;
   };
+  dedupe: { similarity: number; windowHours: number };
 }
 
 export class ConfigError extends Error {
@@ -151,6 +160,8 @@ export function loadConfig(env: Readonly<Record<string, string | undefined>> = p
       baseUrl: e.LLM_BASE_URL,
       fastModel: e.LLM_FAST_MODEL,
       strongModel: e.LLM_STRONG_MODEL,
+      embedModel: e.LLM_EMBED_MODEL,
     },
+    dedupe: { similarity: e.DEDUPE_SIMILARITY, windowHours: e.DEDUPE_WINDOW_HOURS },
   };
 }

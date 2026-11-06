@@ -4,11 +4,11 @@
 import { createServer } from "node:http";
 import { createClientSendHandler, createPgClientSendStore } from "@relay/channels";
 import {
-  Orchestrator, OutboxDispatcher, PeriodicJob, Redis, SyncMetrics, createDefaultOutboxRegistry, createDefaultStageRegistry, priorityStage,
+  Orchestrator, OutboxDispatcher, PeriodicJob, Redis, SyncMetrics, createDefaultOutboxRegistry, createDefaultStageRegistry, dedupeStage, priorityStage,
   createPgReconcileStore, getSyncHealth, githubSyncStage, notifyStage, reconcileOnce, reconcileSettingsFromEnv, ticketStage,
 } from "@relay/core";
 import { createPool, withTenant } from "@relay/db";
-import { createExtractor, createLlmProvider } from "@relay/llm";
+import { createEmbedder, createExtractor, createLlmProvider } from "@relay/llm";
 import { createSwitchRoomHandler, switchFromConfig } from "@relay/switch";
 import { ConfigError, EnvSecretProvider, PIPELINE_VERSION, PROMPT_VERSION, loadConfig } from "@relay/shared";
 
@@ -51,6 +51,14 @@ if (!extract) console.warn(JSON.stringify({ msg: "llm not configured; using plac
 
 // Stages that are not implemented yet stay no-op skeletons (see createDefaultStageRegistry).
 const stages = createDefaultStageRegistry(extract ? { extract } : {});
+// Duplicate detection (#11). Without an embedding model configured it matches nothing and every complaint is its own ticket.
+const embedder = createEmbedder(config.llm);
+if (!embedder) console.warn(JSON.stringify({ msg: "no embedding model; duplicate detection disabled", provider: config.llm.provider }));
+stages.register("dedupe", dedupeStage({
+  embed: embedder ? (text, signal) => embedder.embed(text, signal) : undefined,
+  similarity: config.dedupe.similarity,
+  windowHours: config.dedupe.windowHours,
+}));
 stages.register("priority", priorityStage());
 stages.register("ticket", ticketStage());
 stages.register("notify", notifyStage()); // queues the acknowledgement / refusal / clarification (#16)
