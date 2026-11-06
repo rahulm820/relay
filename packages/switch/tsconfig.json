@@ -8,7 +8,6 @@
     "src"
   ],
   "exclude": [
-    "src/**/*.test.ts",
-    "src/testing/**"
+    "src/**/*.test.ts"
   ]
 }

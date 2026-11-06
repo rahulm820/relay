@@ -4,3 +4,4 @@ export * from "./prompt.js";
 export * from "./provider.js";
 export * from "./extract.js";
 export * from "./embed.js";
+export * from "./golden.js";

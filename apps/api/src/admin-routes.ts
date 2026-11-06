@@ -293,23 +293,32 @@ export function registerAdminRoutes(app: FastifyInstance, deps: AdminRouteDeps):
       return row ? { bot: botDto(row) } : notFound(reply);
     });
 
+    // ---- GitHub webhooks ----
+    scope.post("/api/webhooks/github/:integrationId", async (req, reply) => {
+      const { integrationId } = req.params as { integrationId: string };
+      const body = JSON.stringify(req.body);
+      const signature = req.headers["x-hub-signature-256"] as string | undefined;
+      const row = await tx(req, async (c, pr) => {
+        if (!signature) return reply.code(401).send({ error: "missing signature" });
+        return reply.code(200).send({ ok: true });
+      });
+      if (!row) return reply.code(500).send({ error: "tx failed" });
+    });
+
     // ---- Sync status and re-sync ----
+    // NOTE: GET /api/issue-drafts (and approve/reject) already exists in
+    // issue-drafts.ts (#14); re-registering it here would duplicate the route.
     scope.post("/api/tickets/:id/tracker-sync", async (req, reply) => {
-      const id = req.params.id as string
+      const { id } = req.params as { id: string };
       return reply.code(200).send({ status: "tracker_synced" });
     });
 
     scope.post("/api/integrations/:id/resync", async (req, reply) => {
-      const id = req.params.id as string
+      const { id } = req.params as { id: string };
       return reply.code(200).send({ status: "integration_resynced" });
     });
 
-    // ---- Issue drafts screen ----
-    scope.get("/api/issue-drafts", async (req, reply) => {
-      return reply.code(200).send({ items: [] });
-    });
-
-    // ---- chat connections (read only) -    // ---- chat connections (read only) ----
+    // ---- chat connections (read only) ----
     const chatSql = "SELECT id, provider, workspace_ref, default_channel_ref, switch_bridge_ref, credentials_ref, status FROM chat_connections";
     const chatDto = (r: any) => ({ id: r.id, provider: r.provider, workspaceRef: r.workspace_ref, defaultChannelRef: r.default_channel_ref, switchBridgeRef: r.switch_bridge_ref, credentialsRef: r.credentials_ref, status: r.status });
     scope.get("/api/chat-connections", async (req) => ({ items: (await tx(req, (c) => c.query(`${chatSql} ORDER BY provider, id`))).rows.map(chatDto) }));
