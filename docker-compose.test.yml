@@ -1,0 +1,36 @@
+# Throwaway Postgres (with pgvector) and Redis for the test suite: `npm test` starts them, runs everything, and removes
+# them (`down -v`). Data lives in memory (tmpfs), so every run starts from an empty database. Separate from the
+# development stack in docker-compose.yml: different project name, different ports, nothing shared.
+# Test-only settings (fsync off, a fixed password, loopback ports): never use this file for anything but tests.
+name: relay-test
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: relay
+      POSTGRES_PASSWORD: ${RELAY_TEST_PG_PASSWORD:-relay-test-only}
+      POSTGRES_DB: postgres
+    ports:
+      - "127.0.0.1:5434:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    command: ["postgres", "-c", "fsync=off", "-c", "synchronous_commit=off", "-c", "full_page_writes=off"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U relay -d postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "127.0.0.1:6380:6379"
+    tmpfs:
+      - /data
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
