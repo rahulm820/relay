@@ -16,5 +16,15 @@
   },
   "devDependencies": {
     "tsx": "^4.23.15"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing/mock-github.d.ts",
+      "default": "./dist/testing/mock-github.js"
+    }
   }
 }
