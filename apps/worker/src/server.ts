@@ -5,7 +5,8 @@ import { createServer } from "node:http";
 import { createClientSendHandler, createPgClientSendStore } from "@relay/channels";
 import {
   Orchestrator, OutboxDispatcher, PeriodicJob, Redis, SyncMetrics, createDefaultOutboxRegistry, createDefaultStageRegistry, dedupeStage, priorityStage,
-  createPgReconcileStore, getSyncHealth, githubSyncStage, notifyStage, reconcileOnce, reconcileSettingsFromEnv, ticketStage,
+  createGithubCreateIssueHandler, createPgReconcileStore, getSyncHealth, githubSyncStage, notifyStage, reconcileOnce,
+  reconcileSettingsFromEnv, ticketStage,
 } from "@relay/core";
 import { createPool, withTenant } from "@relay/db";
 import { createEmbedder, createExtractor, createLlmProvider } from "@relay/llm";
@@ -62,9 +63,10 @@ stages.register("dedupe", dedupeStage({
 stages.register("priority", priorityStage());
 stages.register("ticket", ticketStage());
 stages.register("notify", notifyStage()); // queues the acknowledgement / refusal / clarification (#16)
-// GitHub issue creation (#9). Tokens are read from env:NAME refs stored on the integration.
+// GitHub issue creation (#12): the stage only reports sync state; the outbox handler below does the work.
+// Tokens are read from env:NAME refs stored on the integration.
 const secrets = new EnvSecretProvider(process.env);
-stages.register("github-sync", githubSyncStage({ secrets }));
+stages.register("github-sync", githubSyncStage());
 const orchestrator = new Orchestrator({ pool, redis, stages });
 // Switch rooms are created by the outbox (switch.create_room), not by the pipeline's `switch` stage, which stays a
 // skeleton: the outbox row is the retry mechanism and is written in the same transaction as the ticket.
@@ -72,6 +74,8 @@ const orchestrator = new Orchestrator({ pool, redis, stages });
 const { client: switchClient, missing: switchMissing } = switchFromConfig(config.switch);
 if (!switchClient) console.warn(JSON.stringify({ msg: "switch integration disabled", missing: switchMissing }));
 const outboxHandlers = createDefaultOutboxRegistry();
+// github.create_issue (#12): creates exactly one GitHub issue per ticket, with retries and a pre-create lookup.
+outboxHandlers.register("github.create_issue", createGithubCreateIssueHandler({ pool, secrets }));
 outboxHandlers.register("switch.create_room", createSwitchRoomHandler({
   pool, client: switchClient, missing: switchMissing,
   triagerAgent: config.switch.triagerAgent, notifierAgent: config.switch.notifierAgent,

@@ -52,7 +52,8 @@ describe("webhook-style ingest -> orchestrator -> ticket -> outbox -> dispatcher
 
       await waitFor(async () => (await db.owner.query("SELECT switch_room_ref FROM tickets WHERE source_message_id = $1", [messageId])).rows[0]?.switch_room_ref != null);
       await waitFor(() => mock.messages.length >= 1);
-      await waitFor(async () => (await db.owner.query("SELECT count(*)::int AS n FROM outbox WHERE tenant_id = $1 AND status = 'done'", [t.tenantId])).rows[0].n === 2);
+      // Only the Switch row exists here: without a GitHub integration the ticket stage writes no github row (#12).
+      await waitFor(async () => (await db.owner.query("SELECT status FROM outbox WHERE tenant_id = $1 AND kind = 'switch.create_room'", [t.tenantId])).rows[0]?.status === "done");
 
       const ticket = (await db.owner.query("SELECT id, status, switch_room_ref FROM tickets WHERE source_message_id = $1", [messageId])).rows;
       assert.equal(ticket.length, 1);

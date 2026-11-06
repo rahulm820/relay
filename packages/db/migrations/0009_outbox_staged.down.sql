@@ -1,0 +1,1 @@
+-- Postgres cannot drop an enum value; 'staged' is left in place (same as 0008's github.comment).
