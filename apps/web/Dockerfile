@@ -9,9 +9,9 @@ RUN npm install --include=dev --no-audit --no-fund
 FROM node:22-alpine AS build
 WORKDIR /repo
 COPY --from=deps /repo/node_modules ./node_modules
+COPY package.json package-lock.json* tsconfig.base.json ./
 COPY packages/shared ./packages/shared
 COPY apps/web ./apps/web
-COPY tsconfig.base.json ./
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build -w @relay/shared && npm run build -w @relay/web
 
