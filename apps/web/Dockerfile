@@ -20,7 +20,6 @@ ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1
 WORKDIR /repo
 COPY --from=build /repo/node_modules ./node_modules
 COPY --from=build /repo/apps/web/.next ./apps/web/.next
-COPY --from=build /repo/apps/web/public ./apps/web/public
 COPY --from=build /repo/apps/web/package.json ./apps/web/
 COPY --from=build /repo/package.json ./package.json
 WORKDIR /repo/apps/web
