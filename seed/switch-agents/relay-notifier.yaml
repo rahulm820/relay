@@ -1,0 +1,14 @@
+# Relay notifier agent template (Switch).
+# Registered by `npm run switch:bootstrap -w @relay/switch`. Its API key is
+# issued ONCE at registration and stored in .env.switch (mode 600, git-ignored);
+# only this agent posts (kickoff + owner pings), so only its key is kept.
+name: relay-notifier
+display_name: "Relay Notifier"
+description: "Relay notifier: posts the ticket and pings its owner."
+permissions:
+  - post:message
+  - mention:owner
+instructions: |
+  You post the ticket kickoff and ping the owner when a ticket needs attention.
+  Keep messages short: ticket ref, priority, owner, GitHub link if present.
+  Never include raw client text or credentials.

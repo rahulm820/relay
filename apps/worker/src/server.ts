@@ -99,7 +99,7 @@ outboxHandlers.register("github.draft", createGithubDraftHandler({
 }));
 outboxHandlers.register("github.update_issue", createGithubUpdateIssueHandler({ pool, secrets }));
 outboxHandlers.register("switch.post_message", createSwitchMessageHandler({
-  pool, client: switchClient, missing: switchMissing,
+  pool, client: switchClient ?? undefined, missing: switchMissing,
   ...(config.switch.bridgeId ? { log: (e) => console.log(JSON.stringify(e)) } : {}),
 }));
 outboxHandlers.register("switch.create_room", createSwitchRoomHandler({

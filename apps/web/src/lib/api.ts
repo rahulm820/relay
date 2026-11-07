@@ -1,6 +1,6 @@
 import { ApiErrorSchema, type TicketStatus, type Priority } from "@relay/shared/browser";
 import type { z } from "zod";
-import { MeSchema, MembersSchema, TicketDetailSchema, TicketEnvelopeSchema, TicketListSchema, type Me } from "./schemas";
+import { BotEnvelopeSchema, BotsSchema, ChatConnectionsSchema, IntegrationEnvelopeSchema, IntegrationsSchema, MeSchema, MemberEnvelopeSchema, MembersSchema, OutbacklogSchema, OutboxStatsSchema, RoutingRuleEnvelopeSchema, RoutingRulesSchema, SlaPoliciesSchema, SlaPolicyEnvelopeSchema, SyncResultSchema, TicketDetailSchema, TicketEnvelopeSchema, TicketListSchema, type Me } from "./schemas";
 
 export type ApiErrorKind =
   | "unauthorized" // 401: the session ended (or login failed)
@@ -96,4 +96,36 @@ export const api = {
   patchTicket: (id: string, patch: { priority?: Priority; assigneeId?: string | null }) =>
     request("PATCH", `/tickets/${encodeURIComponent(id)}`, TicketEnvelopeSchema, patch),
   members: () => request("GET", "/members", MembersSchema),
+  // ---- Admin / setup (pm role for writes; reads need a session) ----
+  bots: {
+    list: () => request("GET", "/bots", BotsSchema),
+    create: (b: { channel: string; displayName: string; credentialsRef: string }) => request("POST", "/bots", BotEnvelopeSchema, b),
+    patch: (id: string, b: { displayName?: string; credentialsRef?: string }) => request("PATCH", `/bots/${encodeURIComponent(id)}`, BotEnvelopeSchema, b),
+    remove: (id: string) => request("DELETE", `/bots/${encodeURIComponent(id)}`, null),
+  },
+  integrations: {
+    list: () => request("GET", "/integrations", IntegrationsSchema),
+    create: (b: Record<string, unknown>) => request("POST", "/integrations", IntegrationEnvelopeSchema, b),
+    patch: (id: string, b: Record<string, unknown>) => request("PATCH", `/integrations/${encodeURIComponent(id)}`, IntegrationEnvelopeSchema, b),
+    resync: (id: string) => request("POST", `/integrations/${encodeURIComponent(id)}/resync`, SyncResultSchema, {}),
+  },
+  routingRules: {
+    list: () => request("GET", "/routing-rules", RoutingRulesSchema),
+    create: (b: { position: number; condition: Record<string, unknown>; action: Record<string, unknown>; enabled?: boolean }) => request("POST", "/routing-rules", RoutingRuleEnvelopeSchema, b),
+    patch: (id: string, b: Record<string, unknown>) => request("PATCH", `/routing-rules/${encodeURIComponent(id)}`, RoutingRuleEnvelopeSchema, b),
+    remove: (id: string) => request("DELETE", `/routing-rules/${encodeURIComponent(id)}`, null),
+  },
+  slaPolicies: {
+    list: () => request("GET", "/sla-policies", SlaPoliciesSchema),
+    patch: (id: string, b: { ackMinutes?: number; resolveMinutes?: number }) => request("PATCH", `/sla-policies/${encodeURIComponent(id)}`, SlaPolicyEnvelopeSchema, b),
+  },
+  chatConnections: {
+    list: () => request("GET", "/chat-connections", ChatConnectionsSchema),
+  },
+  memberAdmin: {
+    create: (b: Record<string, unknown>) => request("POST", "/members", MemberEnvelopeSchema, b),
+  },
+  trackerSync: (ticketId: string) => request("POST", `/tickets/${encodeURIComponent(ticketId)}/tracker-sync`, SyncResultSchema, {}),
+  outboxStats: () => request("GET", "/outbox/stats", OutboxStatsSchema),
+  outbacklog: () => request("GET", "/outbacklog", OutbacklogSchema),
 };

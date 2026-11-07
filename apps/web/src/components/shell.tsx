@@ -1,7 +1,7 @@
 "use client";
 import * as D from "@radix-ui/react-dropdown-menu";
 import { useQueryClient } from "@tanstack/react-query";
-import { ChevronDown, KanbanSquare, LogOut } from "lucide-react";
+import { ChevronDown, KanbanSquare, LogOut, Settings } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import type { ReactNode } from "react";
@@ -11,8 +11,10 @@ import type { Me } from "../lib/schemas";
 import { Wordmark } from "./brand";
 import { cn } from "./ui";
 
-// Only routes that exist. #19 and #22 add their own entries here.
-const NAV = [{ href: "/", label: "Tickets", icon: KanbanSquare }] as const;
+const NAV = [
+  { href: "/", label: "Tickets", icon: KanbanSquare },
+  { href: "/admin", label: "Setup", icon: Settings },
+] as const;
 
 const initials = (name: string) => name.split(/\s+/).filter(Boolean).slice(0, 2).map((p) => p[0]!.toUpperCase()).join("") || "?";
 

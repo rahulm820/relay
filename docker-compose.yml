@@ -1,4 +1,6 @@
-# Hackathon topology (architecture §14). Switch core is wired in Issue #25; placeholder below.
+# Relay topology (architecture §14). Start: cp .env.example .env && docker compose up -d --build
+# Then migrate+seed on the host (see README): npm run db:migrate -w @relay/db && npm run db:seed -w @relay/db
+# Switch runs from its own checkout (see README "Switch"); point SWITCH_GATEWAY_URL at it.
 name: relay
 
 services:
@@ -68,13 +70,32 @@ services:
       redis:
         condition: service_healthy
 
-  # switch-core: placeholder. Wire to the local Switch checkout (/home/rahul/switch)
-  # per its quickstart in Issue #15 / #25. Not started by default.
-  # switch-core:
-  #   build: /home/rahul/switch
-  #   ports:
-  #     - "3000:3000"   # Gateway UI
-  #     - "8000:8000"   # Agent API
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    env_file: .env
+    environment:
+      # Server-side only: Next proxies /api/* to the API, so the browser never sees this.
+      RELAY_API_URL: http://api:8080
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+
+  # Webhook tunnel (Telegram/GitHub need public HTTPS). Profile-only: start with
+  #   docker compose --profile tunnel up -d
+  # after setting TELEGRAM_WEBHOOK_PUBLIC_URL to your tunnel domain in .env.
+  # tunnel:
+  #   image: cloudflare/cloudflared:latest
+  #   profiles: ["tunnel"]
+  #   command: tunnel --url http://api:8080
+  #   depends_on: [api]
+
+  # Switch (team chat + ticket rooms) runs from the Switch checkout, not here:
+  #   cd /home/rahul/switch && docker compose up -d   # gateway :8000, Mattermost :8065
+  #   npm run switch:bootstrap -w @relay/switch       # relay-triager + relay-notifier agents
+  # See README "How Switch is used". switch-core service intentionally not defined here.
 
 volumes:
   pgdata:

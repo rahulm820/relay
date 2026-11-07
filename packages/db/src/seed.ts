@@ -5,7 +5,10 @@ import type { Pool } from "./client.js";
 export const DEMO_TENANT_ID = "00000000-0000-4000-8000-000000000001";
 const id = (n: number) => `00000000-0000-4000-8000-0000000001${String(n).padStart(2, "0")}`;
 
-export const SEED_COUNTS = { tenants: 1, bots: 1, clients: 1, members: 4, routing_rules: 1, sla_policies: 4 } as const;
+export const SEED_COUNTS = { tenants: 1, bots: 1, clients: 1, members: 4, routing_rules: 3, sla_policies: 4, integrations: 1, tickets: 1 } as const;
+
+/** The demo GitHub repo the seeded integration points at (see seed/demo-app for the known bug). */
+export const DEMO_REPO = "relay/demo-app";
 
 /** Runs as the schema owner (bypasses RLS by design: seeding creates the tenant itself). */
 export async function seed(pool: Pool): Promise<void> {
@@ -37,10 +40,30 @@ export async function seed(pool: Pool): Promise<void> {
     );
   }
   // Default routing (architecture §8.2): bug -> developer, ui -> designer, everything else -> pm.
+  const rules: Array<[number, string, string]> = [
+    [1, '{"category":"bug"}', '{"role":"developer"}'],
+    [2, '{"category":"ui"}', '{"role":"designer"}'],
+    [3, "{}", '{"role":"pm"}'],
+  ];
+  for (const [n, condition, action] of rules) {
+    await run(
+      `INSERT INTO routing_rules (id, tenant_id, position, condition_json, action_json)
+       VALUES ($1, $2, $3, $4::jsonb, $5::jsonb) ON CONFLICT (id) DO NOTHING`,
+      [id(20 + n), t, n, condition, action],
+    );
+  }
+  // Demo GitHub integration: human approval so the code-aware draft can be approved in the demo.
   await run(
-    `INSERT INTO routing_rules (id, tenant_id, position, condition_json, action_json)
-     VALUES ($1, $2, 1, '{}', '{"role":"pm"}') ON CONFLICT (id) DO NOTHING`,
-    [id(20), t],
+    `INSERT INTO integrations (id, tenant_id, provider, credentials_ref, repo_ref, label_map_json, approval_policy, code_aware_enabled, status)
+     VALUES ($1, $2, 'github', 'env:GITHUB_TOKEN', $3, $4::jsonb, 'human', true, 'active') ON CONFLICT (id) DO NOTHING`,
+    [id(40), t, DEMO_REPO, JSON.stringify({ category: { bug: "bug", ui: "ui" }, priority: { P1: "priority:p1", P2: "priority:p2", P3: "priority:p3" } })],
+  );
+  // One example open ticket so the board is populated immediately after startup (the checkout 500 in seed/demo-app).
+  await run(
+    `INSERT INTO tickets (id, tenant_id, client_id, title, summary, category, priority, priority_reason, priority_source, status, role_needed)
+     VALUES ($1, $2, $3, 'Checkout fails with 500 on Pay now', 'Demo Client taps Pay now in seed/demo-app and gets HTTP 500. Known bug: see seed/demo-app/README.md.', 'bug', 'P1', 'seeded demo ticket', 'human', 'assigned', 'developer')
+     ON CONFLICT (id) DO NOTHING`,
+    [id(50), t, id(2)],
   );
   // Default SLA targets in minutes (architecture §8.1).
   const sla = [["P1", 15, 240], ["P2", 60, 1440], ["P3", 1440, 10080], ["P4", 2880, 43200]] as const;
