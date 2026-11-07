@@ -38,15 +38,15 @@ export function createSwitchMessageHandler(deps: MessageHandlerDeps): OutboxHand
     const tx = <T>(fn: Parameters<typeof withTenant<T>>[2]) => withTenant(deps.pool, input.tenantId, fn);
 
     const state = await tx(async (c: Client) => {
-      const ticket = await c.query<{ title: string; switch_room_ref: string | null }>(
+      const ticket = (await c.query<{ title: string; switch_room_ref: string | null }>(
         "SELECT title, switch_room_ref FROM tickets WHERE id = $1", [ticketId],
-      ).rows[0];
+      )).rows[0];
       if (!ticket) return { kind: "no_ticket" as const };
       if (!ticket.switch_room_ref) return { kind: "no_room" as const };
-      const draft = await c.query<{ draft_json: unknown }>(
+      const draft = (await c.query<{ draft_json: unknown }>(
         "SELECT draft_json FROM issue_drafts WHERE id = $1", [draftId],
-      ).rows[0];
-      return { kind: "ready" as const, roomRef: ticket.switch_room_ref, ticketTitle: ticket.title, draftTitle: draft?.draft_json?.title ?? null };
+      )).rows[0];
+      return { kind: "ready" as const, roomRef: ticket.switch_room_ref, ticketTitle: ticket.title, draftTitle: (draft?.draft_json as { title?: string } | null)?.title ?? null };
     });
 
     if (state.kind === "no_ticket") throw new PermanentFailureError("ticket not found", "ticket_not_found");

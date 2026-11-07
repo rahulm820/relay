@@ -3,7 +3,7 @@ import { withTenant, type Pool } from "@relay/db";
 import { z } from "zod";
 import { SwitchAuthError, SwitchRequestError, SwitchUnavailableError } from "./errors.js";
 import type { SwitchClient } from "./client.js";
-import { ROOM_INSTRUCTIONS, buildKickoff, roomDescription, roomMarker, roomName, type TicketForRoom } from "./kickoff.js";
+import { ROOM_INSTRUCTIONS, buildKickoff, roomDescription, roomMarker, roomName, sanitizeUntrusted, type TicketForRoom } from "./kickoff.js";
 
 export interface RoomHandlerDeps {
   pool: Pool;
@@ -31,6 +31,13 @@ export interface MessageHandlerDeps {
 }
 
 const Payload = z.object({ ticketId: z.uuid() });
+const MessagePayload = z.object({
+  ticketId: z.uuid(),
+  draftId: z.uuid(),
+  event: z.enum(["approved", "rejected"]),
+  decidedBy: z.string().max(200),
+  reason: z.string().max(1000).optional(),
+});
 const KICKOFF_EVENT = "switch_kickoff_posted";
 const LINK_EVENT = "switch_room_linked";
 const ACTOR = ["system", "switch:room-handler"] as const;
@@ -171,7 +178,7 @@ export function createSwitchMessageHandler(deps: MessageHandlerDeps): OutboxHand
     const log = deps.log ?? ((e) => { });
     if (!deps.client) throw new PermanentFailureError(`switch is not configured: set ${deps.missing.join(", ")}`, "switch_not_configured");
 
-    const parsed = Payload.safeParse(input.payload);
+    const parsed = MessagePayload.safeParse(input.payload);
     if (!parsed.success) throw new PermanentFailureError("payload must contain a ticketId", "invalid_payload");
     const { ticketId, draftId, event, decidedBy, reason } = parsed.data;
 
@@ -179,15 +186,15 @@ export function createSwitchMessageHandler(deps: MessageHandlerDeps): OutboxHand
     const tx = <T>(fn: Parameters<typeof withTenant<T>>[2]) => withTenant(deps.pool, input.tenantId, fn);
 
     const state = await tx(async (c) => {
-      const ticket = await c.query<{ title: string; switch_room_ref: string | null }>(
+      const ticket = (await c.query<{ title: string; switch_room_ref: string | null }>(
         "SELECT title, switch_room_ref FROM tickets WHERE id = $1", [ticketId],
-      ).rows[0];
+      )).rows[0];
       if (!ticket) return { kind: "no_ticket" as const };
       if (!ticket.switch_room_ref) return { kind: "no_room" as const };
-      const draft = await c.query<{ draft_json: unknown }>(
+      const draft = (await c.query<{ draft_json: unknown }>(
         "SELECT draft_json FROM issue_drafts WHERE id = $1", [draftId],
-      ).rows[0];
-      return { kind: "ready" as const, roomRef: ticket.switch_room_ref, ticketTitle: ticket.title, draftTitle: draft?.draft_json?.title ?? null };
+      )).rows[0];
+      return { kind: "ready" as const, roomRef: ticket.switch_room_ref, ticketTitle: ticket.title, draftTitle: (draft?.draft_json as { title?: string } | null)?.title ?? null };
     });
 
     if (state.kind === "no_ticket") throw new PermanentFailureError("ticket not found", "ticket_not_found");

@@ -9,6 +9,7 @@ import Fastify, { type FastifyError } from "fastify";
 import { registerAdminRoutes } from "./admin-routes.js";
 import type { Authenticator } from "./auth.js";
 import { registerAuthRoutes } from "./auth-routes.js";
+import { registerIssueDraftRoutes } from "./issue-drafts.js";
 import { pgAuthStore } from "./pg-auth-store.js";
 import { registerApiSecurity } from "./security.js";
 import { LoginThrottle, sessionAuthenticator, type AuthStore } from "./session.js";
